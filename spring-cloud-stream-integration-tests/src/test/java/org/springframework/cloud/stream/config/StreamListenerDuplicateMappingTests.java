@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,9 +23,12 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.cloud.stream.annotation.EnableBinding;
 import org.springframework.cloud.stream.annotation.StreamListener;
+import org.springframework.cloud.stream.binding.StreamListenerErrorMessages;
 import org.springframework.cloud.stream.messaging.Processor;
+import org.springframework.cloud.stream.messaging.Sink;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.messaging.Message;
+import org.springframework.messaging.handler.annotation.SendTo;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.fail;
@@ -38,27 +41,77 @@ public class StreamListenerDuplicateMappingTests {
 
 	@Test
 	@SuppressWarnings("unchecked")
-	public void testDuplicateMapping() throws Exception {
+	public void testMultipleMappingsWithReturnValue() {
+		ConfigurableApplicationContext context = null;
 		try {
-			ConfigurableApplicationContext context = SpringApplication.run(TestDuplicateMapping.class,
-					"--server.port=0");
+			context = SpringApplication.run(TestMultipleMappingsWithReturnValue.class, "--server.port=0");
 			fail("Exception expected on duplicate mapping");
 		}
+		catch (IllegalArgumentException e) {
+			assertThat(e.getMessage()).startsWith(StreamListenerErrorMessages.MULTIPLE_VALUE_RETURNING_METHODS);
+		}
+		finally {
+			if (context != null) {
+				context.close();
+			}
+		}
+	}
+
+	@Test
+	public void testDuplicateMappingFromAbstractMethod() {
+		ConfigurableApplicationContext context = null;
+		try {
+			context = SpringApplication.run(TestDuplicateMappingFromAbstractMethod.class, "--server.port=0");
+		}
 		catch (BeanCreationException e) {
-			assertThat(e.getCause().getMessage()).startsWith("Duplicate @StreamListener mapping");
+			String errorMessage = e.getCause().getMessage().startsWith("Duplicate @StreamListener mapping") ?
+					"Duplicate mapping exception is not expected" : "Test failed with exception";
+			fail(errorMessage + ": " + e.getMessage());
+		}
+		finally {
+			if (context != null) {
+				context.close();
+			}
 		}
 	}
 
 	@EnableBinding(Processor.class)
 	@EnableAutoConfiguration
-	public static class TestDuplicateMapping {
+	public static class TestMultipleMappingsWithReturnValue {
 
 		@StreamListener(Processor.INPUT)
-		public void receive(Message<String> fooMessage) {
+		@SendTo(Processor.OUTPUT)
+		public String receive(Message<String> fooMessage) {
+			return null;
 		}
 
 		@StreamListener(Processor.INPUT)
-		public void receiveDuplicateMapping(Message<String> fooMessage) {
+		@SendTo(Processor.OUTPUT)
+		public String receiveDuplicateMapping(Message<String> fooMessage) {
+			return null;
 		}
 	}
+
+	@EnableBinding(Sink.class)
+	@EnableAutoConfiguration
+	public static class TestDuplicateMappingFromAbstractMethod implements GenericSink<TestBase> {
+
+		@Override
+		@StreamListener(Sink.INPUT)
+		public void testMethod(TestBase msg) {
+		}
+	}
+
+	public interface GenericSink<T extends Base> {
+		void testMethod(T msg);
+	}
+
+	public interface Base {
+
+	}
+
+	public class TestBase implements Base {
+
+	}
+
 }

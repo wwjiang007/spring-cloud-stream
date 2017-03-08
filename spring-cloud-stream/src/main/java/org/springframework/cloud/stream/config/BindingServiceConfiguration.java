@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2016 the original author or authors.
+ * Copyright 2015-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,7 +52,6 @@ import org.springframework.cloud.stream.converter.CompositeMessageConverterFacto
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.DependsOn;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.expression.PropertyAccessor;
 import org.springframework.integration.channel.PublishSubscribeChannel;
 import org.springframework.integration.config.IntegrationEvaluationContextFactoryBean;
@@ -80,6 +79,8 @@ import org.springframework.util.CollectionUtils;
 public class BindingServiceConfiguration {
 
 	private static final String ERROR_CHANNEL_NAME = "error";
+
+	public static final String STREAM_LISTENER_ANNOTATION_BEAN_POST_PROCESSOR_NAME = "streamListenerAnnotationBeanPostProcessor";
 
 	@Autowired(required = false)
 	private ObjectMapper objectMapper;
@@ -176,17 +177,15 @@ public class BindingServiceConfiguration {
 	}
 
 	@Bean
-	public static StreamListenerAnnotationBeanPostProcessor bindToAnnotationBeanPostProcessor(
-			@Lazy BinderAwareChannelResolver binderAwareChannelResolver,
-			@Lazy MessageHandlerMethodFactory messageHandlerMethodFactory) {
-		return new StreamListenerAnnotationBeanPostProcessor(binderAwareChannelResolver, messageHandlerMethodFactory);
-	}
-
-	@Bean
 	// provided for backwards compatibility scenarios
 	public ChannelBindingServiceProperties channelBindingServiceProperties(
 			BindingServiceProperties bindingServiceProperties) {
 		return new ChannelBindingServiceProperties(bindingServiceProperties);
+	}
+
+	@Bean(name = STREAM_LISTENER_ANNOTATION_BEAN_POST_PROCESSOR_NAME)
+	public static StreamListenerAnnotationBeanPostProcessor streamListenerAnnotationBeanPostProcessor() {
+		return new StreamListenerAnnotationBeanPostProcessor();
 	}
 
 	// IMPORTANT: Nested class to avoid instantiating all of the above early
@@ -196,6 +195,7 @@ public class BindingServiceConfiguration {
 		private BinderAwareChannelResolver binderAwareChannelResolver;
 
 		@Bean
+		@ConditionalOnMissingBean(BinderAwareRouterBeanPostProcessor.class)
 		public BinderAwareRouterBeanPostProcessor binderAwareRouterBeanPostProcessor(
 				final ConfigurableListableBeanFactory beanFactory) {
 			// IMPORTANT: Lazy delegate to avoid instantiating all of the above early

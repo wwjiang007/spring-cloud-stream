@@ -29,22 +29,26 @@ import java.util.Set;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.BeanFactoryUtils;
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.boot.actuate.autoconfigure.EndpointAutoConfiguration;
 import org.springframework.boot.actuate.endpoint.MetricReaderPublicMetrics;
 import org.springframework.boot.actuate.endpoint.MetricsEndpoint;
-import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.web.EmbeddedServletContainerAutoConfiguration;
 import org.springframework.boot.bind.PropertySourcesPropertyValues;
 import org.springframework.boot.bind.RelaxedDataBinder;
 import org.springframework.boot.bind.RelaxedNames;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.cloud.stream.annotation.EnableBinding;
 import org.springframework.cloud.stream.binding.BindableProxyFactory;
+import org.springframework.cloud.stream.config.ChannelBindingAutoConfiguration;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.PropertySources;
 import org.springframework.integration.monitor.IntegrationMBeanExporter;
+import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
 /**
@@ -56,7 +60,10 @@ import org.springframework.util.StringUtils;
  * @author Venil Noronha
  */
 @EnableBinding
-public class AggregateApplicationBuilder implements AggregateApplication, ApplicationContextAware, SmartInitializingSingleton {
+public class AggregateApplicationBuilder implements AggregateApplication, ApplicationContextAware,
+															SmartInitializingSingleton {
+
+	private static final String CHILD_CONTEXT_SUFFIX = ".spring.cloud.stream.context";
 
 	private SourceConfigurer sourceConfigurer;
 
@@ -77,11 +84,11 @@ public class AggregateApplicationBuilder implements AggregateApplication, Applic
 	private boolean webEnvironment = true;
 
 	public AggregateApplicationBuilder(String... args) {
-		this(new Object[] { ParentConfiguration.class }, args);
+		this(new Object[]{ParentConfiguration.class}, args);
 	}
 
 	public AggregateApplicationBuilder(Object source, String... args) {
-		this(new Object[] { source }, args);
+		this(new Object[]{source}, args);
 	}
 
 	public AggregateApplicationBuilder(Object[] sources, String[] args) {
@@ -101,7 +108,7 @@ public class AggregateApplicationBuilder implements AggregateApplication, Applic
 	}
 
 	public AggregateApplicationBuilder parent(Object source, String... args) {
-		return parent(new Object[] { source }, args);
+		return parent(new Object[]{source}, args);
 	}
 
 	public AggregateApplicationBuilder parent(Object[] sources, String[] args) {
@@ -150,8 +157,11 @@ public class AggregateApplicationBuilder implements AggregateApplication, Applic
 			throw new IllegalStateException("The aggregate application has not been started yet");
 		}
 		try {
-			return bindableType.cast(parentContext.getBean(namespace + "." + bindableType.getName()));
-		} catch (BeansException e) {
+			ChildContextHolder contextHolder = parentContext.getBean(namespace + CHILD_CONTEXT_SUFFIX,
+					ChildContextHolder.class);
+			return contextHolder.getChildContext().getBean(bindableType);
+		}
+		catch (BeansException e) {
 			throw new IllegalStateException("Binding not found for '" + bindableType.getName() + "' into namespace " +
 					namespace);
 		}
@@ -190,6 +200,9 @@ public class AggregateApplicationBuilder implements AggregateApplication, Applic
 			appConfigurers.put(appConfigurer, appConfigurer.namespace);
 		}
 		if (this.parentContext == null) {
+			if (Boolean.TRUE.equals(this.webEnvironment)) {
+				this.addParentSources(new Object[]{EmbeddedServletContainerAutoConfiguration.class});
+			}
 			this.parentContext = AggregateApplicationUtils.createParentContext(this.parentSources.toArray(new Object[0]),
 					this.parentArgs.toArray(new String[0]), selfContained(), this.webEnvironment, this.headless);
 		}
@@ -369,15 +382,14 @@ public class AggregateApplicationBuilder implements AggregateApplication, Applic
 		void embed() {
 			final ConfigurableApplicationContext childContext = childContext(this.app,
 					AggregateApplicationBuilder.this.parentContext, this.namespace).args(this.args).config(this.names)
-							.profiles(this.profiles).run();
+					.profiles(this.profiles).run();
 			// Register bindable proxies as beans so they can be queried for later
 			Map<String, BindableProxyFactory> bindableProxies = BeanFactoryUtils
 					.beansOfTypeIncludingAncestors(childContext.getBeanFactory(), BindableProxyFactory.class);
 			for (String bindableProxyName : bindableProxies.keySet()) {
 				try {
 					AggregateApplicationBuilder.this.parentContext.getBeanFactory().registerSingleton(
-							this.getNamespace() + "." + bindableProxyName.substring(1, bindableProxyName.length()),
-							bindableProxies.get(bindableProxyName).getObject());
+							this.getNamespace() + CHILD_CONTEXT_SUFFIX, new ChildContextHolder(childContext));
 				}
 				catch (Exception e) {
 					throw new IllegalStateException(
@@ -455,7 +467,21 @@ public class AggregateApplicationBuilder implements AggregateApplication, Applic
 
 	}
 
-	@EnableAutoConfiguration
+	private static class ChildContextHolder {
+
+		private final ConfigurableApplicationContext childContext;
+
+		ChildContextHolder(ConfigurableApplicationContext childContext) {
+			Assert.notNull(childContext, "cannot be null");
+			this.childContext = childContext;
+		}
+
+		public ConfigurableApplicationContext getChildContext() {
+			return childContext;
+		}
+	}
+
+	@ImportAutoConfiguration({ChannelBindingAutoConfiguration.class, EndpointAutoConfiguration.class})
 	@EnableBinding
 	public static class ParentConfiguration {
 		@Bean

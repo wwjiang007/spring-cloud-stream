@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 the original author or authors.
+ * Copyright 2015-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,27 +16,34 @@
 
 package org.springframework.cloud.stream.aggregation;
 
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.After;
+import org.junit.Assert;
 import org.junit.Test;
 
 import org.springframework.beans.DirectFieldAccessor;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+import org.springframework.boot.autoconfigure.web.EmbeddedServletContainerAutoConfiguration;
 import org.springframework.cloud.stream.aggregate.AggregateApplicationBuilder;
 import org.springframework.cloud.stream.aggregate.AggregateApplicationBuilder.SourceConfigurer;
 import org.springframework.cloud.stream.aggregate.SharedBindingTargetRegistry;
 import org.springframework.cloud.stream.aggregate.SharedChannelRegistry;
 import org.springframework.cloud.stream.annotation.EnableBinding;
+import org.springframework.cloud.stream.binding.BindableProxyFactory;
 import org.springframework.cloud.stream.binding.BindingTargetFactory;
 import org.springframework.cloud.stream.messaging.Processor;
 import org.springframework.cloud.stream.messaging.Source;
 import org.springframework.cloud.stream.utils.MockBinderRegistryConfiguration;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.MessageChannel;
+import org.springframework.util.ReflectionUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertTrue;
@@ -63,7 +70,7 @@ public class AggregationTest {
 	@Test
 	public void aggregation() {
 		aggregatedApplicationContext = new AggregateApplicationBuilder(
-				MockBinderRegistryConfiguration.class, "--server.port=0")
+				MockBinderRegistryConfiguration.class, "--server.port=0", "--debug=true")
 				.from(TestSource.class)
 				.to(TestProcessor.class)
 				.run();
@@ -111,6 +118,23 @@ public class AggregationTest {
 		final List<String> parentArgs = (List<String>) aggregateApplicationBuilderAccessor.getPropertyValue(
 				"parentArgs");
 		assertThat(parentArgs).containsExactlyInAnyOrder(argsToVerify.toArray(new String[argsToVerify.size()]));
+		List<Object> sources = (List<Object>) aggregateApplicationBuilderAccessor.getPropertyValue("parentSources");
+		assertThat(sources).containsExactlyInAnyOrder(AggregateApplicationBuilder.ParentConfiguration.class,
+				MockBinderRegistryConfiguration.class, DummyConfig.class, EmbeddedServletContainerAutoConfiguration.class);
+		context.close();
+	}
+
+	@Test
+	public void testParentArgsAndSourcesWithWebDisabled() {
+		List<String> argsToVerify = new ArrayList<>();
+		AggregateApplicationBuilder aggregateApplicationBuilder =
+				new AggregateApplicationBuilder(MockBinderRegistryConfiguration.class, "--foo1=bar1");
+		final ConfigurableApplicationContext context =
+				aggregateApplicationBuilder.parent(DummyConfig.class, "--foo2=bar2").web(false)
+						.from(TestSource.class)
+						.namespace("foo").to(TestProcessor.class).namespace("bar")
+						.run("--server.port=0");
+		DirectFieldAccessor aggregateApplicationBuilderAccessor = new DirectFieldAccessor(aggregateApplicationBuilder);
 		List<Object> sources = (List<Object>) aggregateApplicationBuilderAccessor.getPropertyValue("parentSources");
 		assertThat(sources).containsExactlyInAnyOrder(AggregateApplicationBuilder.ParentConfiguration.class,
 				MockBinderRegistryConfiguration.class, DummyConfig.class);
@@ -329,6 +353,41 @@ public class AggregationTest {
 		assertThat(channelFactory).isNotNull();
 		assertThat(sharedChannelRegistry.getAll().keySet()).hasSize(2);
 		aggregatedApplicationContext.close();
+	}
+
+	@Test
+	public void testBindableProxyFactoryCaching() {
+		AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext(MockBinderRegistryConfiguration.class,
+				TestSource.class, TestProcessor.class);
+		Map<String, BindableProxyFactory> factories = context.getBeansOfType(BindableProxyFactory.class);
+		assertThat(factories).hasSize(2);
+
+		Map<String, Source> sources = context.getBeansOfType(Source.class);
+		assertThat(sources).hasSize(2);
+		for (Source source : sources.values()) {
+			source.output();
+		}
+
+		Map<String, Processor> processors = context.getBeansOfType(Processor.class);
+		assertThat(processors).hasSize(1);
+		for (Processor processor : processors.values()) {
+			processor.input();
+			processor.output();
+		}
+
+		for (BindableProxyFactory factory : factories.values()) {
+			Field field = ReflectionUtils.findField(BindableProxyFactory.class, "targetCache");
+			ReflectionUtils.makeAccessible(field);
+			Map<?, ?> targetCache = (Map<?, ?>) ReflectionUtils.getField(field, factory);
+			if (factory.getObjectType() == Source.class) {
+				assertThat(targetCache).hasSize(1);
+			} else if (factory.getObjectType() == Processor.class) {
+				assertThat(targetCache).hasSize(2);
+			} else {
+				Assert.fail("Found unexpected type");
+			}
+		}
+		context.close();
 	}
 
 	@EnableBinding(Source.class)

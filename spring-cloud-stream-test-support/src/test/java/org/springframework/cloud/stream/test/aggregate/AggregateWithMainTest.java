@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,11 +20,13 @@ import java.util.concurrent.TimeUnit;
 
 import org.junit.Test;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cloud.stream.aggregate.AggregateApplication;
 import org.springframework.cloud.stream.aggregate.AggregateApplicationBuilder;
 import org.springframework.cloud.stream.annotation.EnableBinding;
 import org.springframework.cloud.stream.messaging.Processor;
 import org.springframework.cloud.stream.test.binder.MessageCollector;
+import org.springframework.cloud.stream.test.binder.TestSupportBinderAutoConfiguration;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.integration.annotation.Transformer;
@@ -36,12 +38,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Marius Bogoevici
  */
-public class AggregateTestWithMain {
+public class AggregateWithMainTest {
 
 	@Test
 	public void testAggregateApplication() throws InterruptedException {
 		// emulate a main method
-		ConfigurableApplicationContext context = new AggregateApplicationBuilder().from(UppercaseProcessor.class)
+		ConfigurableApplicationContext context = new AggregateApplicationBuilder(TestSupportBinderAutoConfiguration.class).from(UppercaseProcessor.class)
 				.namespace("upper").to(SuffixProcessor.class).namespace("suffix").run();
 
 		AggregateApplication aggregateAccessor = context.getBean(AggregateApplication.class);
@@ -58,6 +60,10 @@ public class AggregateTestWithMain {
 	@Configuration
 	@EnableBinding(Processor.class)
 	public static class UppercaseProcessor {
+
+
+		@Autowired
+		Processor processor;
 
 		@Transformer(inputChannel = Processor.INPUT, outputChannel = Processor.OUTPUT)
 		public String transform(String in) {
