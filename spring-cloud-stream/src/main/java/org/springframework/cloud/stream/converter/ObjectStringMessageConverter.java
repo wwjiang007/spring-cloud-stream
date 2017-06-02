@@ -27,8 +27,8 @@ import org.springframework.util.MimeType;
  * A {@link org.springframework.messaging.converter.MessageConverter} to convert a
  * non-String objects to a String, when expected content type is "text/plain".
  * 
- * It only performs conversions to internal format and is a wrapper
- * around {@link Object#toString()}.
+ * It only performs conversions to internal format and is a wrapper around
+ * {@link Object#toString()}.
  * 
  * @author Marius Bogoevici
  *
@@ -42,6 +42,12 @@ public class ObjectStringMessageConverter extends AbstractMessageConverter {
 
 	protected boolean supports(Class<?> clazz) {
 		return true;
+	}
+
+	@Override
+	protected boolean canConvertFrom(Message<?> message, Class<?> targetClass) {
+		// only supports the conversion to String
+		return supportsMimeType(message.getHeaders()) && String.class == targetClass;
 	}
 
 	protected Object convertFromInternal(Message<?> message, Class<?> targetClass, Object conversionHint) {
@@ -58,7 +64,12 @@ public class ObjectStringMessageConverter extends AbstractMessageConverter {
 
 	protected Object convertToInternal(Object payload, MessageHeaders headers, Object conversionHint) {
 		if (payload != null) {
-			return payload.toString();
+			if ((payload instanceof byte[])) {
+				return new String((byte[]) payload, Charset.forName("UTF-8"));
+			}
+			else {
+				return payload.toString();
+			}
 		}
 		else {
 			return null;

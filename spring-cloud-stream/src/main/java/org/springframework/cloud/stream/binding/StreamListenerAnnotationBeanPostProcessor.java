@@ -30,6 +30,7 @@ import org.springframework.beans.factory.BeanFactoryAware;
 import org.springframework.beans.factory.BeanFactoryUtils;
 import org.springframework.beans.factory.BeanInitializationException;
 import org.springframework.beans.factory.InitializingBean;
+import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.config.BeanExpressionContext;
@@ -71,9 +72,15 @@ import org.springframework.util.StringUtils;
  */
 public class StreamListenerAnnotationBeanPostProcessor
 		implements BeanPostProcessor, ApplicationContextAware, BeanFactoryAware, SmartInitializingSingleton,
-				InitializingBean {
+		InitializingBean {
 
 	private static final SpelExpressionParser SPEL_EXPRESSION_PARSER = new SpelExpressionParser();
+
+	private final MultiValueMap<String, StreamListenerHandlerMethodMapping> mappedListenerMethods = new LinkedMultiValueMap<>();
+
+	private final List<StreamListenerParameterAdapter<?, Object>> streamListenerParameterAdapters = new ArrayList<>();
+
+	private final List<StreamListenerResultAdapter<?, ?>> streamListenerResultAdapters = new ArrayList<>();
 
 	@Autowired
 	@Lazy
@@ -83,13 +90,7 @@ public class StreamListenerAnnotationBeanPostProcessor
 	@Lazy
 	private MessageHandlerMethodFactory messageHandlerMethodFactory;
 
-	private final MultiValueMap<String, StreamListenerHandlerMethodMapping> mappedListenerMethods = new LinkedMultiValueMap<>();
-
 	private ConfigurableApplicationContext applicationContext;
-
-	private final List<StreamListenerParameterAdapter<?, Object>> streamListenerParameterAdapters = new ArrayList<>();
-
-	private final List<StreamListenerResultAdapter<?, ?>> streamListenerResultAdapters = new ArrayList<>();
 
 	private EvaluationContext evaluationContext;
 
@@ -140,7 +141,8 @@ public class StreamListenerAnnotationBeanPostProcessor
 		ReflectionUtils.doWithMethods(targetClass, new ReflectionUtils.MethodCallback() {
 			@Override
 			public void doWith(final Method method) throws IllegalArgumentException, IllegalAccessException {
-				StreamListener streamListener = AnnotatedElementUtils.findMergedAnnotation(method, StreamListener.class);
+				StreamListener streamListener = AnnotatedElementUtils.findMergedAnnotation(method,
+						StreamListener.class);
 				if (streamListener != null && !method.isBridge()) {
 					streamListener = postProcessAnnotation(streamListener, method);
 					Assert.isTrue(method.getAnnotation(Input.class) == null,
@@ -178,8 +180,8 @@ public class StreamListenerAnnotationBeanPostProcessor
 	}
 
 	/**
-	 * Extension point, allowing subclasses to customize the {@link StreamListener} annotation detected by
-	 * the postprocessor.
+	 * Extension point, allowing subclasses to customize the {@link StreamListener}
+	 * annotation detected by the postprocessor.
 	 *
 	 * @param originalAnnotation the original annotation
 	 * @param annotatedMethod the method on which the annotation has been found
@@ -199,7 +201,7 @@ public class StreamListenerAnnotationBeanPostProcessor
 						.getValue(methodParameter.getParameterAnnotation(Input.class));
 				Assert.isTrue(StringUtils.hasText(inboundName), StreamListenerErrorMessages.INVALID_INBOUND_NAME);
 				Assert.isTrue(
-						isDeclarativeMethodParameter(this.applicationContext.getBean(inboundName), methodParameter),
+						isDeclarativeMethodParameter(inboundName, methodParameter),
 						StreamListenerErrorMessages.INVALID_DECLARATIVE_METHOD_PARAMETERS);
 				return true;
 			}
@@ -208,31 +210,43 @@ public class StreamListenerAnnotationBeanPostProcessor
 						.getValue(methodParameter.getParameterAnnotation(Output.class));
 				Assert.isTrue(StringUtils.hasText(outboundName), StreamListenerErrorMessages.INVALID_OUTBOUND_NAME);
 				Assert.isTrue(
-						isDeclarativeMethodParameter(this.applicationContext.getBean(outboundName), methodParameter),
+						isDeclarativeMethodParameter(outboundName, methodParameter),
 						StreamListenerErrorMessages.INVALID_DECLARATIVE_METHOD_PARAMETERS);
 				return true;
 			}
 			if (StringUtils.hasText(methodAnnotatedOutboundName)) {
-				return isDeclarativeMethodParameter(this.applicationContext.getBean(methodAnnotatedOutboundName),
-						methodParameter);
+				return isDeclarativeMethodParameter(methodAnnotatedOutboundName, methodParameter);
 			}
 			if (StringUtils.hasText(methodAnnotatedInboundName)) {
-				return isDeclarativeMethodParameter(this.applicationContext.getBean(methodAnnotatedInboundName),
-						methodParameter);
+				return isDeclarativeMethodParameter(methodAnnotatedInboundName, methodParameter);
 			}
 		}
 		return false;
 	}
 
-	private boolean isDeclarativeMethodParameter(Object targetBean, MethodParameter methodParameter) {
-		if (targetBean != null) {
-			if (methodParameter.getParameterType().isAssignableFrom(targetBean.getClass())) {
+	private boolean isDeclarativeMethodParameter(String targetBeanName, MethodParameter methodParameter) {
+		try {
+			Class targetBeanClass = this.applicationContext.getType(targetBeanName);
+			if (!methodParameter.getParameterType().equals(Object.class)
+					&& (targetBeanClass.isAssignableFrom(methodParameter.getParameterType()) ||
+							methodParameter.getParameterType().isAssignableFrom(targetBeanClass))) {
 				return true;
 			}
-			for (StreamListenerParameterAdapter<?, Object> streamListenerParameterAdapter : this.streamListenerParameterAdapters) {
-				if (streamListenerParameterAdapter.supports(targetBean.getClass(), methodParameter)) {
-					return true;
+		}
+		catch (NoSuchBeanDefinitionException e) {
+			// ignore as the bean definition might not exist yet.
+		}
+		if (!this.streamListenerParameterAdapters.isEmpty()) {
+			try {
+				Object targetBean = this.applicationContext.getBean(targetBeanName);
+				for (StreamListenerParameterAdapter<?, Object> streamListenerParameterAdapter : this.streamListenerParameterAdapters) {
+					if (streamListenerParameterAdapter.supports(targetBean.getClass(), methodParameter)) {
+						return true;
+					}
 				}
+			}
+			catch (BeansException e) {
+				// ignore as the bean definition might not exist yet.
 			}
 		}
 		return false;
@@ -258,17 +272,15 @@ public class StreamListenerAnnotationBeanPostProcessor
 			if (targetReferenceValue != null) {
 				Assert.isInstanceOf(String.class, targetReferenceValue, "Annotation value must be a String");
 				Object targetBean = this.applicationContext.getBean((String) targetReferenceValue);
-				if (parameterType.isAssignableFrom(targetBean.getClass())) {
-					arguments[parameterIndex] = targetBean;
-				}
-				else {
-					for (StreamListenerParameterAdapter<?, Object> streamListenerParameterAdapter : this.streamListenerParameterAdapters) {
-						if (streamListenerParameterAdapter.supports(targetBean.getClass(), methodParameter)) {
-							arguments[parameterIndex] = streamListenerParameterAdapter.adapt(targetBean,
-									methodParameter);
-							break;
-						}
+				// Iterate existing parameter adapters first
+				for (StreamListenerParameterAdapter<?, Object> streamListenerParameterAdapter : this.streamListenerParameterAdapters) {
+					if (streamListenerParameterAdapter.supports(targetBean.getClass(), methodParameter)) {
+						arguments[parameterIndex] = streamListenerParameterAdapter.adapt(targetBean, methodParameter);
+						break;
 					}
+				}
+				if (arguments[parameterIndex] == null && parameterType.isAssignableFrom(targetBean.getClass())) {
+					arguments[parameterIndex] = targetBean;
 				}
 				Assert.notNull(arguments[parameterIndex], "Cannot convert argument " + parameterIndex + " of " + method
 						+ "from " + targetBean.getClass() + " to " + parameterType);
@@ -306,7 +318,8 @@ public class StreamListenerAnnotationBeanPostProcessor
 		}
 	}
 
-	protected final void registerHandlerMethodOnListenedChannel(Method method, StreamListener streamListener, Object bean) {
+	protected final void registerHandlerMethodOnListenedChannel(Method method, StreamListener streamListener,
+			Object bean) {
 		Assert.hasText(streamListener.value(), "The binding name cannot be null");
 		if (!StringUtils.hasText(streamListener.value())) {
 			throw new BeanInitializationException("A bound component name must be specified");

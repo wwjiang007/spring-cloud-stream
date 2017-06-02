@@ -42,8 +42,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.validation.beanvalidation.CustomValidatorBean;
 
 /**
- * Handles binding of input/output targets by delegating to an underlying
- * {@link Binder}.
+ * Handles binding of input/output targets by delegating to an underlying {@link Binder}.
  *
  * @author Mark Fisher
  * @author Dave Syer
@@ -57,13 +56,13 @@ public class BindingService {
 
 	private final Log log = LogFactory.getLog(BindingService.class);
 
-	private BinderFactory binderFactory;
-
 	private final BindingServiceProperties bindingServiceProperties;
 
 	private final Map<String, Binding<?>> producerBindings = new HashMap<>();
 
 	private final Map<String, List<Binding<?>>> consumerBindings = new HashMap<>();
+
+	private BinderFactory binderFactory;
 
 	public BindingService(
 			BindingServiceProperties bindingServiceProperties,
@@ -152,12 +151,13 @@ public class BindingService {
 
 	@SuppressWarnings("unchecked")
 	private <T> Binder<T, ?, ?> getBinder(String channelName, Class<T> bindableType) {
-		String transport = this.bindingServiceProperties.getBinder(channelName);
-		return binderFactory.getBinder(transport, bindableType);
+		String binderConfigurationName = this.bindingServiceProperties.getBinder(channelName);
+		return binderFactory.getBinder(binderConfigurationName, bindableType);
 	}
 
 	/**
 	 * Provided for backwards compatibility. Will be removed in a future version.
+	 *
 	 * @return
 	 */
 	@Deprecated
