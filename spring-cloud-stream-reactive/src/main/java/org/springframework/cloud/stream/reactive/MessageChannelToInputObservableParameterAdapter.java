@@ -28,6 +28,9 @@ import org.springframework.util.Assert;
 /**
  * Adapts an {@link org.springframework.cloud.stream.annotation.Input} annotated
  * {@link MessageChannel} to an {@link Observable}.
+ *
+ * @deprecated as of 2.0.0.RELEASE, this is deprecated and will be removed in 2.1 Use Project Reactor based alternatives offered in Spring Cloud Stream.
+ *
  * @author Marius Bogoevici
  */
 public class MessageChannelToInputObservableParameterAdapter
@@ -41,8 +44,9 @@ public class MessageChannelToInputObservableParameterAdapter
 		this.messageChannelToInputFluxArgumentAdapter = messageChannelToInputFluxArgumentAdapter;
 	}
 
+	@Override
 	public boolean supports(Class<?> bindingTargetType, MethodParameter methodParameter) {
-		return SubscribableChannel.class.isAssignableFrom(bindingTargetType)
+		return MessageChannel.class.isAssignableFrom(bindingTargetType)
 				&& Observable.class.isAssignableFrom(methodParameter.getParameterType());
 	}
 

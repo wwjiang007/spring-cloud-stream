@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,8 @@ package org.springframework.cloud.stream.schema.avro;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.util.Collection;
+import java.util.Collections;
 
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericDatumReader;
@@ -48,15 +48,17 @@ import org.springframework.util.MimeType;
  * Base class for Apache Avro
  * {@link org.springframework.messaging.converter.MessageConverter} implementations.
  * @author Marius Bogoevici
+ * @author Vinicius Carvalho
  */
 public abstract class AbstractAvroMessageConverter extends AbstractMessageConverter {
 
 	protected AbstractAvroMessageConverter(MimeType supportedMimeType) {
-		super(supportedMimeType);
+		this(Collections.singletonList(supportedMimeType));
 	}
 
 	protected AbstractAvroMessageConverter(Collection<MimeType> supportedMimeTypes) {
 		super(supportedMimeTypes);
+		setContentTypeResolver(new OriginalContentTypeResolver());
 	}
 
 	protected static Schema parseSchema(Resource r) throws IOException {
@@ -73,7 +75,7 @@ public abstract class AbstractAvroMessageConverter extends AbstractMessageConver
 		Object result = null;
 		try {
 			byte[] payload = (byte[]) message.getPayload();
-			ByteBuffer buf = ByteBuffer.wrap(payload);
+
 			MimeType mimeType = getContentTypeResolver().resolve(message.getHeaders());
 			if (mimeType == null) {
 				if (conversionHint instanceof MimeType) {
@@ -83,9 +85,11 @@ public abstract class AbstractAvroMessageConverter extends AbstractMessageConver
 					return null;
 				}
 			}
-			buf.get(payload);
+
 			Schema writerSchema = resolveWriterSchemaForDeserialization(mimeType);
 			Schema readerSchema = resolveReaderSchemaForDeserialization(targetClass);
+
+			@SuppressWarnings("unchecked")
 			DatumReader<Object> reader = getDatumReader((Class<Object>) targetClass, readerSchema, writerSchema);
 			Decoder decoder = DecoderFactory.get().binaryDecoder(payload, null);
 			result = reader.read(null, decoder);
@@ -121,6 +125,7 @@ public abstract class AbstractAvroMessageConverter extends AbstractMessageConver
 		return writer;
 	}
 
+	@SuppressWarnings({ "unchecked", "rawtypes" })
 	protected DatumReader<Object> getDatumReader(Class<Object> type, Schema schema, Schema writerSchema) {
 		DatumReader<Object> reader = null;
 		if (SpecificRecord.class.isAssignableFrom(type)) {
@@ -172,6 +177,7 @@ public abstract class AbstractAvroMessageConverter extends AbstractMessageConver
 				hintedContentType = (MimeType) conversionHint;
 			}
 			Schema schema = resolveSchemaForWriting(payload, headers, hintedContentType);
+			@SuppressWarnings("unchecked")
 			DatumWriter<Object> writer = getDatumWriter((Class<Object>) payload.getClass(), schema);
 			Encoder encoder = EncoderFactory.get().binaryEncoder(baos, null);
 			writer.write(payload, encoder);

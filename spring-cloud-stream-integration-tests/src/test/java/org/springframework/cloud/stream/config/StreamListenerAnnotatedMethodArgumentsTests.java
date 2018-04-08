@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,6 @@ import java.util.UUID;
 
 import org.junit.Test;
 
-import org.springframework.beans.factory.BeanCreationException;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.cloud.stream.annotation.EnableBinding;
@@ -37,6 +36,7 @@ import org.springframework.messaging.MessageHeaders;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.Headers;
 import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.util.MimeType;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.fail;
@@ -45,6 +45,7 @@ import static org.springframework.cloud.stream.binding.StreamListenerErrorMessag
 /**
  * @author Marius Bogoevici
  * @author Ilayaperumal Gopinathan
+ * @author Oleg Zhurakousky
  */
 public class StreamListenerAnnotatedMethodArgumentsTests {
 
@@ -59,15 +60,15 @@ public class StreamListenerAnnotatedMethodArgumentsTests {
 		Sink sink = context.getBean(Sink.class);
 		String id = UUID.randomUUID().toString();
 		sink.input().send(MessageBuilder.withPayload("{\"foo\":\"barbar" + id + "\"}")
-				.setHeader("contentType", "application/json").setHeader("testHeader", "testValue").build());
+				.setHeader("contentType", MimeType.valueOf("application/json")).setHeader("testHeader", "testValue").build());
 		assertThat(testPojoWithAnnotatedArguments.receivedArguments).hasSize(3);
 		assertThat(testPojoWithAnnotatedArguments.receivedArguments.get(0))
 				.isInstanceOf(StreamListenerTestUtils.FooPojo.class);
 		assertThat(testPojoWithAnnotatedArguments.receivedArguments.get(0)).hasFieldOrPropertyWithValue("foo",
 				"barbar" + id);
 		assertThat(testPojoWithAnnotatedArguments.receivedArguments.get(1)).isInstanceOf(Map.class);
-		assertThat((Map<String, String>) testPojoWithAnnotatedArguments.receivedArguments.get(1))
-				.containsEntry(MessageHeaders.CONTENT_TYPE, "application/json");
+		assertThat((Map<String, Object>) testPojoWithAnnotatedArguments.receivedArguments.get(1))
+				.containsEntry(MessageHeaders.CONTENT_TYPE, MimeType.valueOf("application/json"));
 		assertThat((Map<String, String>) testPojoWithAnnotatedArguments.receivedArguments.get(1))
 				.containsEntry("testHeader", "testValue");
 		assertThat(testPojoWithAnnotatedArguments.receivedArguments.get(2)).isEqualTo("application/json");
@@ -80,8 +81,8 @@ public class StreamListenerAnnotatedMethodArgumentsTests {
 			SpringApplication.run(TestPojoWithInvalidInputAnnotatedArgument.class, "--server.port=0");
 			fail("Exception expected: " + INVALID_DECLARATIVE_METHOD_PARAMETERS);
 		}
-		catch (BeanCreationException e) {
-			assertThat(e.getCause().getMessage()).contains(INVALID_DECLARATIVE_METHOD_PARAMETERS);
+		catch (IllegalArgumentException e) {
+			assertThat(e.getMessage()).contains(INVALID_DECLARATIVE_METHOD_PARAMETERS);
 		}
 	}
 

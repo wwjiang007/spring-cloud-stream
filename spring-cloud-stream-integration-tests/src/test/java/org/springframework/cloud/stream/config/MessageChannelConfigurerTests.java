@@ -38,11 +38,9 @@ import org.springframework.context.annotation.PropertySource;
 import org.springframework.integration.support.MessageBuilder;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageHandler;
-import org.springframework.messaging.MessagingException;
 import org.springframework.messaging.converter.CompositeMessageConverter;
 import org.springframework.messaging.converter.MessageConverter;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
-import org.springframework.tuple.Tuple;
 import org.springframework.util.MimeTypeUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,6 +49,7 @@ import static org.junit.Assert.assertNull;
 /**
  * @author Ilayaperumal Gopinathan
  * @author Gary Russell
+ * @author Soby Chacko
  */
 @RunWith(SpringJUnit4ClassRunner.class)
 @SpringBootTest(classes = { MessageChannelConfigurerTests.TestSink.class,
@@ -66,8 +65,7 @@ public class MessageChannelConfigurerTests {
 	@Autowired
 	private CompositeMessageConverterFactory messageConverterFactory;
 
-	@Autowired
-	private ObjectMapper objectMapper;
+	private ObjectMapper objectMapper = new ObjectMapper();
 
 	@Autowired
 	private MessageCollector messageCollector;
@@ -75,17 +73,13 @@ public class MessageChannelConfigurerTests {
 	@Test
 	public void testMessageConverterConfigurer() throws Exception {
 		final CountDownLatch latch = new CountDownLatch(1);
-		MessageHandler messageHandler = new MessageHandler() {
-			@Override
-			public void handleMessage(Message<?> message) throws MessagingException {
-				assertThat(message.getPayload()).isInstanceOf(Tuple.class);
-				assertThat(((Tuple) message.getPayload()).getFieldNames().get(0)).isEqualTo("message");
-				assertThat(((Tuple) message.getPayload()).getValue(0)).isEqualTo("Hi");
-				latch.countDown();
-			}
+		MessageHandler messageHandler = message -> {
+			assertThat(message.getPayload()).isInstanceOf(byte[].class);
+			assertThat(message.getPayload()).isEqualTo("{\"message\":\"Hi\"}".getBytes());
+			latch.countDown();
 		};
 		testSink.input().subscribe(messageHandler);
-		testSink.input().send(MessageBuilder.withPayload("{\"message\":\"Hi\"}").build());
+		testSink.input().send(MessageBuilder.withPayload("{\"message\":\"Hi\"}".getBytes()).build());
 		assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
 		testSink.input().unsubscribe(messageHandler);
 	}
@@ -102,7 +96,6 @@ public class MessageChannelConfigurerTests {
 			assertThat(!objectMapper.getSerializationConfig().isEnabled(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS))
 					.withFailMessage("SerializationFeature 'WRITE_DATES_AS_TIMESTAMPS' should be disabled");
 			// assert that the globally set bean is used by the converters
-			assertThat(objectMapper).isSameAs(this.objectMapper);
 		}
 	}
 

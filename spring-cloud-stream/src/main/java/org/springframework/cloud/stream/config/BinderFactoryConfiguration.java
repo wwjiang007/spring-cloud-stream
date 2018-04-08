@@ -30,6 +30,7 @@ import java.util.Properties;
 import org.springframework.beans.factory.BeanCreationException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.cloud.stream.binder.BinderConfiguration;
 import org.springframework.cloud.stream.binder.BinderFactory;
@@ -40,6 +41,7 @@ import org.springframework.cloud.stream.binder.DefaultBinderTypeRegistry;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Role;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
 import org.springframework.core.io.support.PropertiesLoaderUtils;
@@ -52,6 +54,7 @@ import org.springframework.util.StringUtils;
  * @author Ilayaperumal Gopinathan
  */
 @Configuration
+@Role(BeanDefinition.ROLE_INFRASTRUCTURE)
 public class BinderFactoryConfiguration {
 
 	private static final String SPRING_CLOUD_STREAM_INTERNAL_PREFIX = "spring.cloud.stream.internal";
@@ -131,7 +134,7 @@ public class BinderFactoryConfiguration {
 			for (Map.Entry<String, BinderType> binderEntry : binderTypeRegistry.getAll().entrySet()) {
 				if (!existingBinderConfigurations.contains(binderEntry.getKey())) {
 					binderConfigurations.put(binderEntry.getKey(), new BinderConfiguration(binderEntry.getKey(),
-							new Properties(), true, true));
+							new HashMap<>(), true, true));
 				}
 			}
 		}
@@ -143,9 +146,7 @@ public class BinderFactoryConfiguration {
 	public BinderTypeRegistry binderTypeRegistry(ConfigurableApplicationContext configurableApplicationContext) {
 		Map<String, BinderType> binderTypes = new HashMap<>();
 		ClassLoader classLoader = configurableApplicationContext.getClassLoader();
-		if (classLoader == null) {
-			classLoader = BinderFactoryConfiguration.class.getClassLoader();
-		}
+		// the above can never be null since it will default to ClassUtils.getDefaultClassLoader(..)
 		try {
 			Enumeration<URL> resources = classLoader.getResources("META-INF/spring.binders");
 			if (!Boolean.valueOf(this.selfContained) && (resources == null || !resources.hasMoreElements())) {

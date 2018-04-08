@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2016 the original author or authors.
+ * Copyright 2015-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,13 +30,14 @@ import org.springframework.context.annotation.PropertySource;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 
-import static org.mockito.Matchers.anyString;
-import static org.mockito.Matchers.eq;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 /**
  * @author Marius Bogoevici
+ * @author Janne Valkealahti
  */
 @RunWith(SpringJUnit4ClassRunner.class)
 @SpringBootTest(classes = ArbitraryInterfaceWithBindingTargetsTests.TestFooChannels.class)
@@ -45,22 +46,21 @@ public class ArbitraryInterfaceWithBindingTargetsTests {
 	@Autowired
 	public FooChannels fooChannels;
 
-	@SuppressWarnings("rawtypes")
 	@Autowired
 	private BinderFactory binderFactory;
 
-	@SuppressWarnings("unchecked")
+	@SuppressWarnings({"rawtypes", "unchecked"})
 	@Test
 	public void testArbitraryInterfaceChannelsBound() {
 		Binder binder = binderFactory.getBinder(null, MessageChannel.class);
-		verify(binder).bindConsumer(eq("someQueue.0"), anyString(), eq(this.fooChannels.foo()),
-				Mockito.<ConsumerProperties>any());
-		verify(binder).bindConsumer(eq("someQueue.1"), anyString(), eq(this.fooChannels.bar()),
-				Mockito.<ConsumerProperties>any());
+		verify(binder).bindConsumer(eq("someQueue.0"), isNull(), eq(this.fooChannels.foo()),
+				Mockito.any());
+		verify(binder).bindConsumer(eq("someQueue.1"), isNull(), eq(this.fooChannels.bar()),
+				Mockito.any());
 		verify(binder).bindProducer(eq("someQueue.2"), eq(this.fooChannels.baz()),
-				Mockito.<ProducerProperties>any());
+				Mockito.any());
 		verify(binder).bindProducer(eq("someQueue.3"), eq(this.fooChannels.qux()),
-				Mockito.<ProducerProperties>any());
+				Mockito.any());
 		verifyNoMoreInteractions(binder);
 	}
 

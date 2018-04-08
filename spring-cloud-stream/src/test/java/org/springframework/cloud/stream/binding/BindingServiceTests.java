@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2016 the original author or authors.
+ * Copyright 2015-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,17 +22,21 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.junit.Ignore;
 import org.junit.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-import org.springframework.beans.MutablePropertyValues;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
-import org.springframework.boot.bind.RelaxedDataBinder;
+import org.springframework.boot.context.properties.source.MapConfigurationPropertySource;
 import org.springframework.cloud.stream.binder.Binder;
 import org.springframework.cloud.stream.binder.BinderConfiguration;
 import org.springframework.cloud.stream.binder.BinderType;
@@ -41,6 +45,8 @@ import org.springframework.cloud.stream.binder.Binding;
 import org.springframework.cloud.stream.binder.ConsumerProperties;
 import org.springframework.cloud.stream.binder.DefaultBinderFactory;
 import org.springframework.cloud.stream.binder.DefaultBinderTypeRegistry;
+import org.springframework.cloud.stream.binder.ExtendedProducerProperties;
+import org.springframework.cloud.stream.binder.ExtendedPropertiesBinder;
 import org.springframework.cloud.stream.binder.ProducerProperties;
 import org.springframework.cloud.stream.config.BinderFactoryConfiguration;
 import org.springframework.cloud.stream.config.BindingProperties;
@@ -49,18 +55,23 @@ import org.springframework.cloud.stream.converter.CompositeMessageConverterFacto
 import org.springframework.cloud.stream.reflection.GenericsUtils;
 import org.springframework.cloud.stream.utils.MockBinderConfiguration;
 import org.springframework.integration.channel.DirectChannel;
+import org.springframework.integration.test.util.TestUtils;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.core.DestinationResolutionException;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.fail;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.eq;
-import static org.mockito.Matchers.isNull;
-import static org.mockito.Matchers.matches;
-import static org.mockito.Matchers.same;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.matches;
+import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -69,9 +80,11 @@ import static org.mockito.Mockito.when;
  * @author Mark Fisher
  * @author Marius Bogoevici
  * @author Ilayaperumal Gopinathan
+ * @author Janne Valkealahti
  */
 public class BindingServiceTests {
 
+	@SuppressWarnings({ "unchecked", "rawtypes" })
 	@Test
 	public void testDefaultGroup() throws Exception {
 		BindingServiceProperties properties = new BindingServiceProperties();
@@ -85,9 +98,8 @@ public class BindingServiceTests {
 		Binder binder = binderFactory.getBinder("mock", MessageChannel.class);
 		BindingService service = new BindingService(properties, binderFactory);
 		MessageChannel inputChannel = new DirectChannel();
-		@SuppressWarnings("unchecked")
 		Binding<MessageChannel> mockBinding = Mockito.mock(Binding.class);
-		when(binder.bindConsumer(eq("foo"), isNull(String.class), same(inputChannel),
+		when(binder.bindConsumer(eq("foo"), isNull(), same(inputChannel),
 				any(ConsumerProperties.class))).thenReturn(mockBinding);
 		Collection<Binding<MessageChannel>> bindings = service.bindConsumer(inputChannel,
 				inputChannelName);
@@ -95,24 +107,13 @@ public class BindingServiceTests {
 		Binding<MessageChannel> binding = bindings.iterator().next();
 		assertThat(binding).isSameAs(mockBinding);
 		service.unbindConsumers(inputChannelName);
-		verify(binder).bindConsumer(eq("foo"), isNull(String.class), same(inputChannel),
+		verify(binder).bindConsumer(eq("foo"), isNull(), same(inputChannel),
 				any(ConsumerProperties.class));
 		verify(binding).unbind();
 		binderFactory.destroy();
 	}
 
-	private DefaultBinderFactory createMockBinderFactory() {
-		BinderTypeRegistry binderTypeRegistry = createMockBinderTypeRegistry();
-		return new DefaultBinderFactory(
-				Collections.singletonMap("mock", new BinderConfiguration("mock", new Properties(), true, true)),
-				binderTypeRegistry);
-	}
-
-	private DefaultBinderTypeRegistry createMockBinderTypeRegistry() {
-		return new DefaultBinderTypeRegistry(Collections.singletonMap("mock",
-				new BinderType("mock", new Class[] { MockBinderConfiguration.class })));
-	}
-
+	@SuppressWarnings({ "unchecked", "rawtypes" })
 	@Test
 	public void testMultipleConsumerBindings() throws Exception {
 		BindingServiceProperties properties = new BindingServiceProperties();
@@ -131,14 +132,12 @@ public class BindingServiceTests {
 				binderFactory);
 		MessageChannel inputChannel = new DirectChannel();
 
-		@SuppressWarnings("unchecked")
 		Binding<MessageChannel> mockBinding1 = Mockito.mock(Binding.class);
-		@SuppressWarnings("unchecked")
 		Binding<MessageChannel> mockBinding2 = Mockito.mock(Binding.class);
 
-		when(binder.bindConsumer(eq("foo"), isNull(String.class), same(inputChannel),
+		when(binder.bindConsumer(eq("foo"), isNull(), same(inputChannel),
 				any(ConsumerProperties.class))).thenReturn(mockBinding1);
-		when(binder.bindConsumer(eq("bar"), isNull(String.class), same(inputChannel),
+		when(binder.bindConsumer(eq("bar"), isNull(), same(inputChannel),
 				any(ConsumerProperties.class))).thenReturn(mockBinding2);
 
 		Collection<Binding<MessageChannel>> bindings = service.bindConsumer(inputChannel,
@@ -154,9 +153,9 @@ public class BindingServiceTests {
 
 		service.unbindConsumers("input");
 
-		verify(binder).bindConsumer(eq("foo"), isNull(String.class), same(inputChannel),
+		verify(binder).bindConsumer(eq("foo"), isNull(), same(inputChannel),
 				any(ConsumerProperties.class));
-		verify(binder).bindConsumer(eq("bar"), isNull(String.class), same(inputChannel),
+		verify(binder).bindConsumer(eq("bar"), isNull(), same(inputChannel),
 				any(ConsumerProperties.class));
 		verify(binding1).unbind();
 		verify(binding2).unbind();
@@ -164,6 +163,7 @@ public class BindingServiceTests {
 		binderFactory.destroy();
 	}
 
+	@SuppressWarnings({ "unchecked", "rawtypes" })
 	@Test
 	public void testExplicitGroup() throws Exception {
 		BindingServiceProperties properties = new BindingServiceProperties();
@@ -179,7 +179,6 @@ public class BindingServiceTests {
 		BindingService service = new BindingService(properties,
 				binderFactory);
 		MessageChannel inputChannel = new DirectChannel();
-		@SuppressWarnings("unchecked")
 		Binding<MessageChannel> mockBinding = Mockito.mock(Binding.class);
 		when(binder.bindConsumer(eq("foo"), eq("fooGroup"), same(inputChannel),
 				any(ConsumerProperties.class))).thenReturn(mockBinding);
@@ -196,25 +195,46 @@ public class BindingServiceTests {
 		binderFactory.destroy();
 	}
 
+	@SuppressWarnings({ "rawtypes", "unchecked" })
 	@Test
 	public void checkDynamicBinding() {
 		BindingServiceProperties properties = new BindingServiceProperties();
+		BindingProperties bindingProperties = new BindingProperties();
+		bindingProperties.setProducer(new ProducerProperties());
+		properties.setBindings(Collections.singletonMap("foo", bindingProperties));
 		DefaultBinderFactory binderFactory = createMockBinderFactory();
-		Binder binder = binderFactory.getBinder("mock", MessageChannel.class);
-		@SuppressWarnings("unchecked")
+		final ExtendedPropertiesBinder binder = mock(ExtendedPropertiesBinder.class);
+		Properties extendedProps = new Properties();
+		when(binder.getExtendedProducerProperties(anyString())).thenReturn(extendedProps);
 		Binding<MessageChannel> mockBinding = Mockito.mock(Binding.class);
-		@SuppressWarnings("unchecked")
 		final AtomicReference<MessageChannel> dynamic = new AtomicReference<>();
 		when(binder.bindProducer(matches("foo"), any(DirectChannel.class),
 				any(ProducerProperties.class))).thenReturn(mockBinding);
-		BindingService bindingService = new BindingService(properties, binderFactory);
-		SubscribableChannelBindingTargetFactory bindableSubscribableChannelFactory = new SubscribableChannelBindingTargetFactory(
-				new MessageConverterConfigurer(properties, new CompositeMessageConverterFactory()));
+		BindingService bindingService = new BindingService(properties, binderFactory) {
+
+			@Override
+			protected <T> Binder<T, ?, ?> getBinder(String channelName, Class<T> bindableType) {
+				return binder;
+			}
+
+		};
+		SubscribableChannelBindingTargetFactory bindableSubscribableChannelFactory =
+				new SubscribableChannelBindingTargetFactory(
+						new MessageConverterConfigurer(properties, new CompositeMessageConverterFactory()));
+		final AtomicBoolean callbackInvoked = new AtomicBoolean();
 		BinderAwareChannelResolver resolver = new BinderAwareChannelResolver(
 				bindingService, bindableSubscribableChannelFactory,
-				new DynamicDestinationsBindable());
-		ConfigurableListableBeanFactory beanFactory = mock(
-				ConfigurableListableBeanFactory.class);
+				new DynamicDestinationsBindable(),
+				(name, channel, props, extended) -> {
+					callbackInvoked.set(true);
+					assertThat(name).isEqualTo("foo");
+					assertThat(channel).isNotNull();
+					assertThat(props).isNotNull();
+					assertThat(extended).isSameAs(extendedProps);
+					props.setUseNativeEncoding(true);
+					extendedProps.setProperty("bar", "baz");
+				});
+		ConfigurableListableBeanFactory beanFactory = mock(ConfigurableListableBeanFactory.class);
 		when(beanFactory.getBean("foo", MessageChannel.class))
 				.thenThrow(new NoSuchBeanDefinitionException(MessageChannel.class));
 		when(beanFactory.getBean("bar", MessageChannel.class))
@@ -223,7 +243,7 @@ public class BindingServiceTests {
 
 			@Override
 			public Void answer(InvocationOnMock invocation) throws Throwable {
-				dynamic.set(invocation.getArgumentAt(1, MessageChannel.class));
+				dynamic.set(invocation.getArgument(1));
 				return null;
 			}
 
@@ -239,8 +259,12 @@ public class BindingServiceTests {
 		resolver.setBeanFactory(beanFactory);
 		MessageChannel resolved = resolver.resolveDestination("foo");
 		assertThat(resolved).isSameAs(dynamic.get());
-		verify(binder).bindProducer(eq("foo"), eq(dynamic.get()),
-				any(ProducerProperties.class));
+		ArgumentCaptor<ProducerProperties> captor = ArgumentCaptor.forClass(ProducerProperties.class);
+		verify(binder).bindProducer(eq("foo"), eq(dynamic.get()), captor.capture());
+		assertThat(captor.getValue().isUseNativeEncoding()).isTrue();
+		assertThat(captor.getValue()).isInstanceOf(ExtendedProducerProperties.class);
+		assertThat(((ExtendedProducerProperties) captor.getValue()).getExtension()).isSameAs(extendedProps);
+		doReturn(dynamic.get()).when(beanFactory).getBean("foo", MessageChannel.class);
 		properties.setDynamicDestinations(new String[] { "foo" });
 		resolved = resolver.resolveDestination("foo");
 		assertThat(resolved).isSameAs(dynamic.get());
@@ -310,9 +334,7 @@ public class BindingServiceTests {
 		properties.put("spring.cloud.stream.bindings.input.binder", "mock");
 		properties.put("spring.cloud.stream.bindings.output.destination", "fooOutput");
 		properties.put("spring.cloud.stream.bindings.output.binder", "mockError");
-		BindingServiceProperties bindingServiceProperties = new BindingServiceProperties();
-		RelaxedDataBinder dataBinder = new RelaxedDataBinder(bindingServiceProperties, "spring.cloud.stream");
-		dataBinder.bind(new MutablePropertyValues(properties));
+		BindingServiceProperties bindingServiceProperties = createBindingServiceProperties(properties);
 		BindingService bindingService = new BindingService(bindingServiceProperties,
 				createMockBinderFactory());
 		bindingService.bindConsumer(new DirectChannel(), "input");
@@ -333,9 +355,7 @@ public class BindingServiceTests {
 		properties.put("spring.cloud.stream.defaultBinder", "mock1");
 		properties.put("spring.cloud.stream.binders.mock1.type", "mock");
 		properties.put("spring.cloud.stream.binders.kafka1.type", "kafka");
-		BindingServiceProperties bindingServiceProperties = new BindingServiceProperties();
-		RelaxedDataBinder dataBinder = new RelaxedDataBinder(bindingServiceProperties, "spring.cloud.stream");
-		dataBinder.bind(new MutablePropertyValues(properties));
+		BindingServiceProperties bindingServiceProperties = createBindingServiceProperties(properties);
 		DefaultBinderFactory binderFactory = new BinderFactoryConfiguration()
 				.binderFactory(createMockBinderTypeRegistry(), bindingServiceProperties);
 		BindingService bindingService = new BindingService(bindingServiceProperties,
@@ -353,9 +373,7 @@ public class BindingServiceTests {
 		properties.put("spring.cloud.stream.bindings.output.type", "kafka1");
 		properties.put("spring.cloud.stream.binders.mock1.type", "mock");
 		properties.put("spring.cloud.stream.binders.kafka1.type", "kafka");
-		BindingServiceProperties bindingServiceProperties = new BindingServiceProperties();
-		RelaxedDataBinder dataBinder = new RelaxedDataBinder(bindingServiceProperties, "spring.cloud.stream");
-		dataBinder.bind(new MutablePropertyValues(properties));
+		BindingServiceProperties bindingServiceProperties = createBindingServiceProperties(properties);
 		DefaultBinderFactory binderFactory = new BinderFactoryConfiguration()
 				.binderFactory(createMockBinderTypeRegistry(), bindingServiceProperties);
 		BindingService bindingService = new BindingService(bindingServiceProperties,
@@ -374,6 +392,112 @@ public class BindingServiceTests {
 	public void testResolveBindableType() {
 		Class<?> bindableType = GenericsUtils.getParameterType(FooBinder.class, Binder.class, 0);
 		assertThat(bindableType).isSameAs(SomeBindableType.class);
+	}
+
+	@SuppressWarnings({ "rawtypes", "unchecked" })
+	@Test
+	@Ignore // Inconsistent, needs fixing
+	public void testLateBindingConsumer() throws Exception {
+		BindingServiceProperties properties = new BindingServiceProperties();
+		properties.setBindingRetryInterval(1);
+		Map<String, BindingProperties> bindingProperties = new HashMap<>();
+		BindingProperties props = new BindingProperties();
+		props.setDestination("foo");
+		final String inputChannelName = "input";
+		bindingProperties.put(inputChannelName, props);
+		properties.setBindings(bindingProperties);
+		DefaultBinderFactory binderFactory = createMockBinderFactory();
+		Binder binder = binderFactory.getBinder("mock", MessageChannel.class);
+		ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+		scheduler.initialize();
+		BindingService service = new BindingService(properties, binderFactory, scheduler);
+		MessageChannel inputChannel = new DirectChannel();
+		final Binding<MessageChannel> mockBinding = Mockito.mock(Binding.class);
+		final CountDownLatch fail = new CountDownLatch(2);
+		doAnswer(i -> {
+			fail.countDown();
+			if (fail.getCount() == 1) {
+				throw new RuntimeException("fail");
+			}
+			return mockBinding;
+		}).when(binder).bindConsumer(eq("foo"), isNull(), same(inputChannel), any(ConsumerProperties.class));
+		Collection<Binding<MessageChannel>> bindings = service.bindConsumer(inputChannel, inputChannelName);
+		assertThat(fail.await(10, TimeUnit.SECONDS)).isTrue();
+		assertThat(bindings).hasSize(1);
+		Binding<MessageChannel> delegate = TestUtils.getPropertyValue(bindings.iterator().next(), "delegate",
+				Binding.class);
+		int n = 0;
+		while (n++ < 300 && delegate == null) {
+			Thread.sleep(100);
+		}
+		assertThat(delegate).isSameAs(mockBinding);
+		service.unbindConsumers(inputChannelName);
+		verify(binder, times(2)).bindConsumer(eq("foo"), isNull(), same(inputChannel),
+				any(ConsumerProperties.class));
+		verify(delegate).unbind();
+		binderFactory.destroy();
+	}
+
+	@SuppressWarnings({ "rawtypes", "unchecked" })
+	@Test
+	public void testLateBindingProducer() throws Exception {
+		BindingServiceProperties properties = new BindingServiceProperties();
+		properties.setBindingRetryInterval(1);
+		Map<String, BindingProperties> bindingProperties = new HashMap<>();
+		BindingProperties props = new BindingProperties();
+		props.setDestination("foo");
+		final String outputChannelName = "output";
+		bindingProperties.put(outputChannelName, props);
+		properties.setBindings(bindingProperties);
+		DefaultBinderFactory binderFactory = createMockBinderFactory();
+		Binder binder = binderFactory.getBinder("mock", MessageChannel.class);
+		ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+		scheduler.initialize();
+		BindingService service = new BindingService(properties, binderFactory, scheduler);
+		MessageChannel outputChannel = new DirectChannel();
+		final Binding<MessageChannel> mockBinding = Mockito.mock(Binding.class);
+		final CountDownLatch fail = new CountDownLatch(2);
+		doAnswer(i -> {
+			fail.countDown();
+			if (fail.getCount() == 1) {
+				throw new RuntimeException("fail");
+			}
+			return mockBinding;
+		}).when(binder).bindProducer(eq("foo"), same(outputChannel), any(ProducerProperties.class));
+		Binding<MessageChannel> binding = service.bindProducer(outputChannel, outputChannelName);
+		assertThat(fail.await(10, TimeUnit.SECONDS)).isTrue();
+		assertThat(binding).isNotNull();
+		Binding delegate = TestUtils.getPropertyValue(binding, "delegate", Binding.class);
+		int n = 0;
+		while (n++ < 300 && delegate == null) {
+			Thread.sleep(100);
+			delegate = TestUtils.getPropertyValue(binding, "delegate", Binding.class);
+		}
+		assertThat(delegate).isSameAs(mockBinding);
+		service.unbindProducers(outputChannelName);
+		verify(binder, times(2)).bindProducer(eq("foo"), same(outputChannel), any(ProducerProperties.class));
+		verify(delegate).unbind();
+		binderFactory.destroy();
+		scheduler.destroy();
+	}
+
+	private DefaultBinderFactory createMockBinderFactory() {
+		BinderTypeRegistry binderTypeRegistry = createMockBinderTypeRegistry();
+		return new DefaultBinderFactory(
+				Collections.singletonMap("mock", new BinderConfiguration("mock", new HashMap<>(), true, true)),
+				binderTypeRegistry);
+	}
+
+	private DefaultBinderTypeRegistry createMockBinderTypeRegistry() {
+		return new DefaultBinderTypeRegistry(Collections.singletonMap("mock",
+				new BinderType("mock", new Class[] { MockBinderConfiguration.class })));
+	}
+
+	private BindingServiceProperties createBindingServiceProperties(HashMap<String, String> properties) {
+		BindingServiceProperties bindingServiceProperties = new BindingServiceProperties();
+		org.springframework.boot.context.properties.bind.Binder propertiesBinder = new org.springframework.boot.context.properties.bind.Binder(new MapConfigurationPropertySource(properties));
+		propertiesBinder.bind("spring.cloud.stream", org.springframework.boot.context.properties.bind.Bindable.ofInstance(bindingServiceProperties));
+		return bindingServiceProperties;
 	}
 
 	public static class FooBinder
@@ -395,4 +519,5 @@ public class BindingServiceTests {
 
 	public static class SomeBindableType {
 	}
+
 }

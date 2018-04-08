@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Marius Bogoevici
  */
 @RunWith(SpringJUnit4ClassRunner.class)
-@SpringBootTest(classes = AggregateWithBeanTest.ChainedProcessors.class, properties = { "server.port=-1" })
+@SpringBootTest(classes = AggregateWithBeanTest.ChainedProcessors.class, properties = { "server.port=-1","--spring.cloud.stream.bindings.input.contentType=text/plain","--spring.cloud.stream.bindings.output.contentType=text/plain" })
 public class AggregateWithBeanTest {
 
 	@Autowired
@@ -52,11 +52,12 @@ public class AggregateWithBeanTest {
 	public AggregateApplication aggregateApplication;
 
 	@Test
+	@SuppressWarnings("unchecked")
 	public void testAggregateApplication() throws InterruptedException {
 		Processor uppercaseProcessor = aggregateApplication.getBinding(Processor.class, "upper");
 		Processor suffixProcessor = aggregateApplication.getBinding(Processor.class, "suffix");
 		uppercaseProcessor.input().send(MessageBuilder.withPayload("Hello").build());
-		Message<?> receivedMessage = messageCollector.forChannel(suffixProcessor.output()).poll(1, TimeUnit.SECONDS);
+		Message<String> receivedMessage = (Message<String>) messageCollector.forChannel(suffixProcessor.output()).poll(1, TimeUnit.SECONDS);
 		assertThat(receivedMessage).isNotNull();
 		assertThat(receivedMessage.getPayload()).isEqualTo("HELLO WORLD!");
 	}

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,10 +18,12 @@ package org.springframework.cloud.stream.test.aggregate.main;
 
 import java.util.concurrent.TimeUnit;
 
+import org.junit.Before;
 import org.junit.Test;
 
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.SpringBootConfiguration;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.cloud.stream.aggregate.AggregateApplication;
 import org.springframework.cloud.stream.aggregate.AggregateApplicationBuilder;
 import org.springframework.cloud.stream.annotation.EnableBinding;
@@ -37,35 +39,44 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Marius Bogoevici
+ * @author Artem Bilan
  */
 public class AggregateWithMainTest {
 
+	@Before
+	public void before() {
+		System.setProperty("server.port", "0");
+	}
+
+	@SuppressWarnings("unchecked")
 	@Test
 	public void testAggregateApplication() throws InterruptedException {
 		// emulate a main method
-		ConfigurableApplicationContext context = new AggregateApplicationBuilder(MainConfiguration.class)
+		ConfigurableApplicationContext context = new AggregateApplicationBuilder(MainConfiguration.class).web(false)
 				.from(UppercaseProcessor.class).namespace("upper")
 				.to(SuffixProcessor.class).namespace("suffix")
-				.run();
+				.run("--spring.cloud.stream.bindings.input.contentType=text/plain","--spring.cloud.stream.bindings.output.contentType=text/plain");
 
 		AggregateApplication aggregateAccessor = context.getBean(AggregateApplication.class);
 		MessageCollector messageCollector = context.getBean(MessageCollector.class);
 		Processor uppercaseProcessor = aggregateAccessor.getBinding(Processor.class, "upper");
 		Processor suffixProcessor = aggregateAccessor.getBinding(Processor.class, "suffix");
 		uppercaseProcessor.input().send(MessageBuilder.withPayload("Hello").build());
-		Message<?> receivedMessage = messageCollector.forChannel(suffixProcessor.output()).poll(1, TimeUnit.SECONDS);
+		Message<String> receivedMessage = (Message<String>) messageCollector.forChannel(suffixProcessor.output()).poll(1, TimeUnit.SECONDS);
 		assertThat(receivedMessage).isNotNull();
 		assertThat(receivedMessage.getPayload()).isEqualTo("HELLO WORLD!");
 		context.close();
 	}
 
-	@SpringBootApplication
+	@SpringBootConfiguration
+	@EnableAutoConfiguration
 	public static class MainConfiguration {
+
 	}
 
 	@Configuration
 	@EnableBinding(Processor.class)
-	public static class UppercaseProcessor {
+	static class UppercaseProcessor {
 
 		@Autowired
 		Processor processor;
@@ -74,15 +85,18 @@ public class AggregateWithMainTest {
 		public String transform(String in) {
 			return in.toUpperCase();
 		}
+
 	}
 
 	@Configuration
 	@EnableBinding(Processor.class)
-	public static class SuffixProcessor {
+	static class SuffixProcessor {
 
 		@Transformer(inputChannel = Processor.INPUT, outputChannel = Processor.OUTPUT)
 		public String transform(String in) {
 			return in + " WORLD!";
 		}
+
 	}
+
 }

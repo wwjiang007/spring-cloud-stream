@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,9 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.concurrent.TimeUnit;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -44,35 +47,39 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Marius Bogoevici
  * @author Ilayaperumal Gopinathan
+ * @author Oleg Zhurakousky
  */
 @RunWith(Parameterized.class)
 public class StreamListenerReactiveReturnWithPojoTests {
 
 	private Class<?> configClass;
 
+	private ObjectMapper mapper = new ObjectMapper();
+
 	public StreamListenerReactiveReturnWithPojoTests(Class<?> configClass) {
 		this.configClass = configClass;
 	}
 
 	@Parameterized.Parameters
-	public static Collection InputConfigs() {
+	public static Collection<?> InputConfigs() {
 		return Arrays.asList(new Class[] { ReactorTestReturnWithPojo1.class, ReactorTestReturnWithPojo2.class,
 				ReactorTestReturnWithPojo3.class, ReactorTestReturnWithPojo4.class, RxJava1TestReturnWithPojo1.class,
 				RxJava1TestReturnWithPojo2.class, RxJava1TestReturnWithPojo3.class, RxJava1TestReturnWithPojo4.class });
 	}
 
 	@Test
+	@SuppressWarnings("unchecked")
 	public void testReturnWithPojo() throws Exception {
-		ConfigurableApplicationContext context = SpringApplication.run(this.configClass, "--server.port=0");
-		@SuppressWarnings("unchecked")
+		ConfigurableApplicationContext context = SpringApplication.run(this.configClass, "--server.port=0",
+				"--spring.jmx.enabled=false");
 		Processor processor = context.getBean(Processor.class);
 		processor.input().send(MessageBuilder.withPayload("{\"message\":\"helloPojo\"}")
 				.setHeader("contentType", "application/json").build());
 		MessageCollector messageCollector = context.getBean(MessageCollector.class);
-		Message<?> result = messageCollector.forChannel(processor.output()).poll(1000, TimeUnit.MILLISECONDS);
+		Message<String> result = (Message<String>) messageCollector.forChannel(processor.output()).poll(1000, TimeUnit.MILLISECONDS);
 		assertThat(result).isNotNull();
-		assertThat(result.getPayload()).isInstanceOf(BarPojo.class);
-		assertThat(((BarPojo) result.getPayload()).getBarMessage()).isEqualTo("helloPojo");
+		BarPojo barPojo = mapper.readValue(result.getPayload(),BarPojo.class);
+		assertThat(barPojo.getBarMessage()).isEqualTo("helloPojo");
 		context.close();
 	}
 
@@ -175,7 +182,8 @@ public class StreamListenerReactiveReturnWithPojoTests {
 
 		private String barMessage;
 
-		public BarPojo(String barMessage) {
+		@JsonCreator
+		public BarPojo(@JsonProperty("barMessage") String barMessage) {
 			this.barMessage = barMessage;
 		}
 

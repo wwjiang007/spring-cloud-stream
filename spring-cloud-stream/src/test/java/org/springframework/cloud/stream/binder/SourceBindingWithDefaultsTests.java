@@ -30,7 +30,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 
-import static org.mockito.Matchers.eq;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 
@@ -41,18 +41,17 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 @SpringBootTest(classes = SourceBindingWithDefaultsTests.TestSource.class)
 public class SourceBindingWithDefaultsTests {
 
-	@SuppressWarnings("rawtypes")
 	@Autowired
 	private BinderFactory binderFactory;
 
 	@Autowired
 	private Source testSource;
 
-	@SuppressWarnings("unchecked")
+	@SuppressWarnings({"rawtypes", "unchecked"})
 	@Test
 	public void testSourceOutputChannelBound() {
 		Binder binder = binderFactory.getBinder(null, MessageChannel.class);
-		verify(binder).bindProducer(eq("output"), eq(this.testSource.output()), Mockito.<ProducerProperties>any());
+		verify(binder).bindProducer(eq("output"), eq(this.testSource.output()), Mockito.any());
 		verifyNoMoreInteractions(binder);
 	}
 

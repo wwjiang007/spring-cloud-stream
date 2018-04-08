@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,12 @@
 
 package org.springframework.cloud.stream.binder;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import org.apache.commons.logging.Log;
 
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.InitializingBean;
@@ -25,15 +31,16 @@ import org.springframework.cloud.stream.provisioning.ConsumerDestination;
 import org.springframework.cloud.stream.provisioning.ProducerDestination;
 import org.springframework.cloud.stream.provisioning.ProvisioningException;
 import org.springframework.cloud.stream.provisioning.ProvisioningProvider;
+import org.springframework.context.ApplicationEvent;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationEventPublisherAware;
 import org.springframework.context.Lifecycle;
-import org.springframework.expression.ExpressionParser;
-import org.springframework.expression.spel.standard.SpelExpressionParser;
-import org.springframework.integration.channel.FixedSubscriberChannel;
+import org.springframework.integration.channel.AbstractMessageChannel;
+import org.springframework.integration.channel.PublishSubscribeChannel;
 import org.springframework.integration.context.IntegrationContextUtils;
 import org.springframework.integration.core.MessageProducer;
-import org.springframework.integration.endpoint.EventDrivenConsumer;
+import org.springframework.integration.core.MessageSource;
 import org.springframework.integration.handler.AbstractMessageHandler;
-import org.springframework.integration.handler.AbstractReplyProducingMessageHandler;
 import org.springframework.integration.handler.BridgeHandler;
 import org.springframework.integration.handler.advice.ErrorMessageSendingRecoverer;
 import org.springframework.integration.support.ErrorMessageStrategy;
@@ -42,30 +49,39 @@ import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.MessageHandler;
 import org.springframework.messaging.MessageHeaders;
 import org.springframework.messaging.SubscribableChannel;
+import org.springframework.messaging.support.ChannelInterceptorAdapter;
+import org.springframework.retry.RecoveryCallback;
 import org.springframework.util.Assert;
-import org.springframework.util.MimeType;
-import org.springframework.util.MimeTypeUtils;
 
 /**
  * {@link AbstractBinder} that serves as base class for {@link MessageChannel} binders.
  * Implementors must implement the following methods:
  * <ul>
- * <li>{@link #createProducerMessageHandler(ProducerDestination, ProducerProperties)}</li>
+ * <li>{@link #createProducerMessageHandler(ProducerDestination, ProducerProperties, MessageChannel)}</li>
  * <li>{@link #createConsumerEndpoint(ConsumerDestination, String, ConsumerProperties)}
  * </li>
  * </ul>
  *
  * @param <C> the consumer properties type
  * @param <P> the producer properties type
+ *
  * @author Marius Bogoevici
  * @author Ilayaperumal Gopinathan
  * @author Soby Chacko
+ * @author Oleg Zhurakousky
+ * @author Artem Bilan
+ * @author Gary Russell
+ *
  * @since 1.1
  */
 public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties, P extends ProducerProperties, PP extends ProvisioningProvider<C, P>>
-		extends AbstractBinder<MessageChannel, C, P> {
+		extends AbstractBinder<MessageChannel, C, P>
+		implements PollableConsumerBinder<MessageHandler, C>, ApplicationEventPublisherAware {
 
-	protected static final ExpressionParser EXPRESSION_PARSER = new SpelExpressionParser();
+	private final EmbeddedHeadersChannelInterceptor embeddedHeadersChannelInterceptor =
+			new EmbeddedHeadersChannelInterceptor(this.logger);
+
+	private final ObjectMapper objectMapper = new ObjectMapper();
 
 	/**
 	 * {@link ProvisioningProvider} delegated by the downstream binder implementations.
@@ -73,32 +89,47 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 	protected final PP provisioningProvider;
 
 	/**
-	 * Indicates whether the implementation and the message broker have native support for
-	 * message headers. If false, headers will be embedded in the message payloads.
-	 */
-	private final boolean supportsHeadersNatively;
-
-	/**
-	 * Indicates what headers are to be embedded in the payload if
-	 * {@link #supportsHeadersNatively} is true.
+	 * Indicates which headers are to be embedded in the payload if
+	 * a binding requires embedding headers.
 	 */
 	private final String[] headersToEmbed;
 
-	public AbstractMessageChannelBinder(boolean supportsHeadersNatively, String[] headersToEmbed,
+	private ApplicationEventPublisher applicationEventPublisher;
+
+	public AbstractMessageChannelBinder(String[] headersToEmbed,
 			PP provisioningProvider) {
-		this.supportsHeadersNatively = supportsHeadersNatively;
+
 		this.headersToEmbed = headersToEmbed == null ? new String[0] : headersToEmbed;
 		this.provisioningProvider = provisioningProvider;
 	}
 
 	/**
+	 * @deprecated As of release 2.0. Please use other constructors.
+	 */
+	@Deprecated
+	protected AbstractMessageChannelBinder(boolean supportsHeadersNatively, String[] headersToEmbed,
+			PP provisioningProvider) {
+
+		this(headersToEmbed, provisioningProvider);
+	}
+
+	@Override
+	public void setApplicationEventPublisher(ApplicationEventPublisher applicationEventPublisher) {
+		this.applicationEventPublisher = applicationEventPublisher;
+	}
+
+	protected ApplicationEventPublisher getApplicationEventPublisher() {
+		return this.applicationEventPublisher;
+	}
+
+	/**
 	 * Binds an outbound channel to a given destination. The implementation delegates to
 	 * {@link ProvisioningProvider#provisionProducerDestination(String, ProducerProperties)}
-	 * and {@link #createProducerMessageHandler(ProducerDestination, ProducerProperties)}
+	 * and {@link #createProducerMessageHandler(ProducerDestination, ProducerProperties, MessageChannel)}
 	 * for handling the middleware specific logic. If the returned producer message
 	 * handler is an {@link InitializingBean} then
 	 * {@link InitializingBean#afterPropertiesSet()} will be called on it. Similarly, if
-	 * the returned producer message handler e ndpoint is a {@link Lifecycle}, then
+	 * the returned producer message handler endpoint is a {@link Lifecycle}, then
 	 * {@link Lifecycle#start()} will be called on it.
 	 *
 	 * @param destination the name of the destination
@@ -117,7 +148,10 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 		try {
 			producerDestination = this.provisioningProvider.provisionProducerDestination(destination,
 					producerProperties);
-			producerMessageHandler = createProducerMessageHandler(producerDestination, producerProperties);
+			SubscribableChannel errorChannel = producerProperties.isErrorChannelEnabled()
+					? registerErrorInfrastructure(producerDestination) : null;
+			producerMessageHandler = createProducerMessageHandler(producerDestination, producerProperties,
+					errorChannel);
 			if (producerMessageHandler instanceof InitializingBean) {
 				((InitializingBean) producerMessageHandler).afterPropertiesSet();
 			}
@@ -136,28 +170,48 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 		if (producerMessageHandler instanceof Lifecycle) {
 			((Lifecycle) producerMessageHandler).start();
 		}
+		postProcessOutputChannel(outputChannel, producerProperties);
 		((SubscribableChannel) outputChannel).subscribe(
-				new SendingHandler(producerMessageHandler, !this.supportsHeadersNatively && HeaderMode.embeddedHeaders
+				new SendingHandler(producerMessageHandler, HeaderMode.embeddedHeaders
 						.equals(producerProperties.getHeaderMode()), this.headersToEmbed,
 						producerProperties.isUseNativeEncoding()));
 
-		return new DefaultBinding<MessageChannel>(destination, null, outputChannel,
+		Binding<MessageChannel> binding = new DefaultBinding<MessageChannel>(destination, null, outputChannel,
 				producerMessageHandler instanceof Lifecycle ? (Lifecycle) producerMessageHandler : null) {
+
+			@Override
+			public Map<String, Object> getExtendedInfo() {
+				return doGetExtendedInfo(destination, producerProperties);
+			}
 
 			@Override
 			public void afterUnbind() {
 				try {
+					destroyErrorInfrastructure(producerDestination);
 					if (producerMessageHandler instanceof DisposableBean) {
 						((DisposableBean) producerMessageHandler).destroy();
 					}
 				}
 				catch (Exception e) {
 					AbstractMessageChannelBinder.this.logger
-							.error("Exception thrown while unbinding " + this.toString(), e);
+							.error("Exception thrown while unbinding " + toString(), e);
 				}
 				afterUnbindProducer(producerDestination, producerProperties);
 			}
 		};
+
+		doPublishEvent(new BindingCreatedEvent(binding));
+		return binding;
+	}
+
+	/**
+	 * Allows subclasses to perform post processing on the channel - for example to
+	 * add more interceptors.
+	 * @param outputChannel the channel.
+	 * @param producerProperties the producer properties.
+	 */
+	protected void postProcessOutputChannel(MessageChannel outputChannel, P producerProperties) {
+		// default no-op
 	}
 
 	/**
@@ -175,11 +229,14 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 	 *
 	 * @param destination the name of the target destination
 	 * @param producerProperties the producer properties
+	 * @param errorChannel the error channel (if enabled, otherwise null). If not null,
+	 * the binder must wire this channel into the producer endpoint so that errors
+	 * are forwarded to it.
 	 * @return the message handler for sending data to the target middleware
 	 * @throws Exception
 	 */
 	protected abstract MessageHandler createProducerMessageHandler(ProducerDestination destination,
-			P producerProperties)
+			P producerProperties, MessageChannel errorChannel)
 			throws Exception;
 
 	/**
@@ -214,45 +271,46 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 			final C properties) throws BinderException {
 		MessageProducer consumerEndpoint = null;
 		try {
-			final ConsumerDestination destination = this.provisioningProvider.provisionConsumerDestination(name, group,
-					properties);
-			final boolean extractEmbeddedHeaders = HeaderMode.embeddedHeaders.equals(
-					properties.getHeaderMode()) && !this.supportsHeadersNatively;
-			ReceivingHandler rh = new ReceivingHandler(extractEmbeddedHeaders);
-			rh.setOutputChannel(inputChannel);
-			final FixedSubscriberChannel bridge = new FixedSubscriberChannel(rh);
-			bridge.setBeanName("bridge." + name);
+			ConsumerDestination destination = this.provisioningProvider.provisionConsumerDestination(name, group, properties);
+
+			if (HeaderMode.embeddedHeaders.equals(properties.getHeaderMode())) {
+				enhanceMessageChannel(inputChannel);
+			}
 			consumerEndpoint = createConsumerEndpoint(destination, group, properties);
-			consumerEndpoint.setOutputChannel(bridge);
+			consumerEndpoint.setOutputChannel(inputChannel);
 			if (consumerEndpoint instanceof InitializingBean) {
 				((InitializingBean) consumerEndpoint).afterPropertiesSet();
 			}
 			if (consumerEndpoint instanceof Lifecycle) {
 				((Lifecycle) consumerEndpoint).start();
 			}
-			final Object endpoint = consumerEndpoint;
-			EventDrivenConsumer edc = new EventDrivenConsumer(bridge, rh);
-			edc.setBeanName("inbound." + groupedName(name, group));
-			edc.start();
-			return new DefaultBinding<MessageChannel>(name, group, inputChannel,
-					endpoint instanceof Lifecycle ? (Lifecycle) endpoint : null) {
+
+			Binding<MessageChannel> binding = new DefaultBinding<MessageChannel>(name, group, inputChannel,
+					consumerEndpoint instanceof Lifecycle ? (Lifecycle) consumerEndpoint : null) {
+
+				@Override
+				public Map<String, Object> getExtendedInfo() {
+					return doGetExtendedInfo(destination, properties);
+				}
 
 				@Override
 				protected void afterUnbind() {
 					try {
-						if (endpoint instanceof DisposableBean) {
-							((DisposableBean) endpoint).destroy();
+						if (getEndpoint() instanceof DisposableBean) {
+							((DisposableBean) getEndpoint()).destroy();
 						}
 					}
 					catch (Exception e) {
 						AbstractMessageChannelBinder.this.logger
-								.error("Exception thrown while unbinding " + this.toString(), e);
+								.error("Exception thrown while unbinding " + toString(), e);
 					}
 					afterUnbindConsumer(destination, this.group, properties);
 					destroyErrorInfrastructure(destination, group, properties);
 				}
 
 			};
+			doPublishEvent(new BindingCreatedEvent(binding));
+			return binding;
 		}
 		catch (Exception e) {
 			if (consumerEndpoint instanceof Lifecycle) {
@@ -268,6 +326,79 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 				throw new BinderException("Exception thrown while starting consumer: ", e);
 			}
 		}
+	}
+
+	@Override
+	public Binding<PollableSource<MessageHandler>> bindPollableConsumer(String name, String group,
+			final PollableSource<MessageHandler> inboundBindTarget, C properties) {
+		Assert.isInstanceOf(DefaultPollableMessageSource.class, inboundBindTarget);
+		DefaultPollableMessageSource bindingTarget = (DefaultPollableMessageSource) inboundBindTarget;
+		ConsumerDestination destination = this.provisioningProvider.provisionConsumerDestination(name, group,
+				properties);
+		if (HeaderMode.embeddedHeaders.equals(properties.getHeaderMode())) {
+			bindingTarget.addInterceptor(0, this.embeddedHeadersChannelInterceptor);
+		}
+		final PolledConsumerResources resources = createPolledConsumerResources(name, group, destination, properties);
+		bindingTarget.setSource(resources.getSource());
+		if (resources.getErrorInfrastructure() != null) {
+			if (resources.getErrorInfrastructure().getErrorChannel() != null) {
+				bindingTarget.setErrorChannel(resources.getErrorInfrastructure().getErrorChannel());
+			}
+			ErrorMessageStrategy ems = getErrorMessageStrategy();
+			if (ems != null) {
+				bindingTarget.setErrorMessageStrategy(ems);
+			}
+		}
+		if (properties.getMaxAttempts() > 1) {
+			bindingTarget.setRetryTemplate(buildRetryTemplate(properties));
+			bindingTarget.setRecoveryCallback(
+					getPolledConsumerRecoveryCallback(resources.getErrorInfrastructure(), properties));
+		}
+		postProcessPollableSource(bindingTarget);
+		if (resources.getSource() instanceof Lifecycle) {
+				((Lifecycle) resources.getSource()).start();
+		}
+		Binding<PollableSource<MessageHandler>> binding = new DefaultBinding<PollableSource<MessageHandler>>(name, group, inboundBindTarget,
+				resources.getSource() instanceof Lifecycle ? (Lifecycle) resources.getSource() : null) {
+
+			@Override
+			public Map<String, Object> getExtendedInfo() {
+				return doGetExtendedInfo(destination, properties);
+			}
+
+			@Override
+			public void afterUnbind() {
+				afterUnbindConsumer(destination, this.group, properties);
+				destroyErrorInfrastructure(destination, group, properties);
+			}
+
+		};
+
+		doPublishEvent(new BindingCreatedEvent(binding));
+		return binding;
+	}
+
+	protected void postProcessPollableSource(DefaultPollableMessageSource bindingTarget) {
+	}
+
+	/**
+	 * Implementations can override the default {@link ErrorMessageSendingRecoverer}.
+	 * @param errorInfrastructure the infrastructure.
+	 * @param properties the consumer properties.
+	 * @return the recoverer.
+	 */
+	protected RecoveryCallback<Object> getPolledConsumerRecoveryCallback(ErrorInfrastructure errorInfrastructure,
+			C properties) {
+		return errorInfrastructure.getRecoverer();
+	}
+
+	protected PolledConsumerResources createPolledConsumerResources(String name, String group,
+			ConsumerDestination destination, C consumerProperties) {
+		throw new UnsupportedOperationException("This binder does not support pollable consumers");
+	}
+
+	private void enhanceMessageChannel(MessageChannel inputChannel) {
+		((AbstractMessageChannel) inputChannel).addInterceptor(0, this.embeddedHeadersChannelInterceptor);
 	}
 
 	/**
@@ -294,7 +425,47 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 	}
 
 	/**
-	 * Build an errorChannelRecoverer that writes to a pub/sub channel for the destination.
+	 * Register an error channel for the destination when an async send error is received.
+	 * Bridge the channel to the global error channel (if present).
+	 * @param destination the destination.
+	 * @return the channel.
+	 */
+	private SubscribableChannel registerErrorInfrastructure(ProducerDestination destination) {
+		ConfigurableListableBeanFactory beanFactory = getApplicationContext().getBeanFactory();
+		String errorChannelName = errorsBaseName(destination);
+		SubscribableChannel errorChannel = null;
+		if (getApplicationContext().containsBean(errorChannelName)) {
+			Object errorChannelObject = getApplicationContext().getBean(errorChannelName);
+			if (!(errorChannelObject instanceof SubscribableChannel)) {
+				throw new IllegalStateException(
+						"Error channel '" + errorChannelName + "' must be a SubscribableChannel");
+			}
+			errorChannel = (SubscribableChannel) errorChannelObject;
+		}
+		else {
+			errorChannel = new PublishSubscribeChannel();
+			beanFactory.registerSingleton(errorChannelName, errorChannel);
+			errorChannel = (PublishSubscribeChannel) beanFactory.initializeBean(errorChannel, errorChannelName);
+		}
+		MessageChannel defaultErrorChannel = null;
+		if (getApplicationContext().containsBean(IntegrationContextUtils.ERROR_CHANNEL_BEAN_NAME)) {
+			defaultErrorChannel = getApplicationContext().getBean(IntegrationContextUtils.ERROR_CHANNEL_BEAN_NAME,
+					MessageChannel.class);
+		}
+		if (defaultErrorChannel != null) {
+			BridgeHandler errorBridge = new BridgeHandler();
+			errorBridge.setOutputChannel(defaultErrorChannel);
+			errorChannel.subscribe(errorBridge);
+			String errorBridgeHandlerName = getErrorBridgeName(destination);
+			beanFactory.registerSingleton(errorBridgeHandlerName, errorBridge);
+			beanFactory.initializeBean(errorBridge, errorBridgeHandlerName);
+		}
+		return errorChannel;
+	}
+
+	/**
+	 * Build an errorChannelRecoverer that writes to a pub/sub channel for the destination
+	 * when an exception is thrown to a consumer.
 	 * @param destination the destination.
 	 * @param group the group.
 	 * @param consumerProperties the properties.
@@ -303,6 +474,23 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 	 */
 	protected final ErrorInfrastructure registerErrorInfrastructure(ConsumerDestination destination, String group,
 			C consumerProperties) {
+
+		return registerErrorInfrastructure(destination, group, consumerProperties, false);
+	}
+
+	/**
+	 * Build an errorChannelRecoverer that writes to a pub/sub channel for the destination
+	 * when an exception is thrown to a consumer.
+	 * @param destination the destination.
+	 * @param group the group.
+	 * @param consumerProperties the properties.
+	 * @param polled true if this is for a polled consumer.
+	 * @return the ErrorInfrastructure which is a holder for the error channel, the recoverer and the
+	 * message handler that is subscribed to the channel.
+	 */
+	protected final ErrorInfrastructure registerErrorInfrastructure(ConsumerDestination destination, String group,
+			C consumerProperties, boolean polled) {
+
 		ErrorMessageStrategy errorMessageStrategy = getErrorMessageStrategy();
 		ConfigurableListableBeanFactory beanFactory = getApplicationContext().getBeanFactory();
 		String errorChannelName = errorsBaseName(destination, group, consumerProperties);
@@ -330,7 +518,13 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 		String recovererBeanName = getErrorRecovererName(destination, group, consumerProperties);
 		beanFactory.registerSingleton(recovererBeanName, recoverer);
 		beanFactory.initializeBean(recoverer, recovererBeanName);
-		MessageHandler handler = getErrorMessageHandler(destination, group, consumerProperties);
+		MessageHandler handler;
+		if (polled) {
+			handler = getPolledConsumerErrorMessageHandler(destination, group, consumerProperties);
+		}
+		else {
+			handler = getErrorMessageHandler(destination, group, consumerProperties);
+		}
 		MessageChannel defaultErrorChannel = null;
 		if (getApplicationContext().containsBean(IntegrationContextUtils.ERROR_CHANNEL_BEAN_NAME)) {
 			defaultErrorChannel = getApplicationContext().getBean(IntegrationContextUtils.ERROR_CHANNEL_BEAN_NAME,
@@ -354,6 +548,25 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 			beanFactory.initializeBean(errorBridge, errorBridgeHandlerName);
 		}
 		return new ErrorInfrastructure(errorChannel, recoverer, handler);
+	}
+
+	private void destroyErrorInfrastructure(ProducerDestination destination) {
+		String errorChannelName = errorsBaseName(destination);
+		String errorBridgeHandlerName = getErrorBridgeName(destination);
+		MessageHandler bridgeHandler = null;
+		if (getApplicationContext().containsBean(errorBridgeHandlerName)) {
+			bridgeHandler = getApplicationContext().getBean(errorBridgeHandlerName, MessageHandler.class);
+		}
+		if (getApplicationContext().containsBean(errorChannelName)) {
+			SubscribableChannel channel = getApplicationContext().getBean(errorChannelName, SubscribableChannel.class);
+			if (bridgeHandler != null) {
+				channel.unsubscribe(bridgeHandler);
+				((DefaultSingletonBeanRegistry) getApplicationContext().getBeanFactory())
+						.destroySingleton(errorBridgeHandlerName);
+			}
+			((DefaultSingletonBeanRegistry) getApplicationContext().getBeanFactory())
+					.destroySingleton(errorChannelName);
+		}
 	}
 
 	private void destroyErrorInfrastructure(ConsumerDestination destination, String group, C properties) {
@@ -403,8 +616,22 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 	 * @return the handler (may be null, which is the default, causing the exception to be
 	 * rethrown).
 	 */
-	protected MessageHandler getErrorMessageHandler(final ConsumerDestination destination, final String group,
-			final C consumerProperties) {
+	protected MessageHandler getErrorMessageHandler(ConsumerDestination destination, String group,
+			C consumerProperties) {
+		return null;
+	}
+
+	/**
+	 * Binders can return a message handler to be subscribed to the error channel.
+	 * Examples might be if the user wishes to (re)publish messages to a DLQ.
+	 * @param destination the destination.
+	 * @param group the group.
+	 * @param consumerProperties the properties.
+	 * @return the handler (may be null, which is the default, causing the exception to be
+	 * rethrown).
+	 */
+	protected MessageHandler getPolledConsumerErrorMessageHandler(ConsumerDestination destination, String group,
+			C consumerProperties) {
 		return null;
 	}
 
@@ -450,52 +677,24 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 		return destination.getName() + "." + group + ".errors";
 	}
 
-	private final class ReceivingHandler extends AbstractReplyProducingMessageHandler {
+	protected String getErrorBridgeName(ProducerDestination destination) {
+		return errorsBaseName(destination) + ".bridge";
+	}
 
-		private final boolean extractEmbeddedHeaders;
+	protected String errorsBaseName(ProducerDestination destination) {
+		return destination.getName() + ".errors";
+	}
 
-		private ReceivingHandler(boolean extractEmbeddedHeaders) {
-			this.extractEmbeddedHeaders = extractEmbeddedHeaders;
-		}
+	private Map<String, Object> doGetExtendedInfo(Object destination, Object properties) {
+		Map<String, Object> extendedInfo = new LinkedHashMap<>();
+		extendedInfo.put("bindingDestination", destination.toString());
+		extendedInfo.put(properties.getClass().getSimpleName(), objectMapper.convertValue(properties, Map.class));
+		return extendedInfo;
+	}
 
-		@Override
-		@SuppressWarnings("unchecked")
-		protected Object handleRequestMessage(Message<?> requestMessage) {
-			if (!(requestMessage.getPayload() instanceof byte[])
-					&& !requestMessage.getHeaders().containsKey(BinderHeaders.BINDER_ORIGINAL_CONTENT_TYPE)) {
-				return requestMessage;
-			}
-			MessageValues messageValues;
-			if (this.extractEmbeddedHeaders) {
-				try {
-					messageValues = EmbeddedHeaderUtils.extractHeaders((Message<byte[]>) requestMessage,
-							true);
-				}
-				catch (Exception e) {
-					AbstractMessageChannelBinder.this.logger.error(
-							EmbeddedHeaderUtils.decodeExceptionMessage(
-									requestMessage),
-							e);
-					messageValues = new MessageValues(requestMessage);
-				}
-				messageValues = deserializePayloadIfNecessary(messageValues);
-			}
-			else {
-				MimeType contentType = AbstractMessageChannelBinder.this.contentTypeResolver.resolve(requestMessage.getHeaders());
-				if (contentType != null && !MimeTypeUtils.APPLICATION_OCTET_STREAM.equals(contentType)) {
-					messageValues = deserializePayloadIfNecessary(requestMessage);
-				}
-				else {
-					return requestMessage;
-				}
-			}
-			return messageValues.toMessage();
-		}
-
-		@Override
-		protected boolean shouldCopyRequestHeaders() {
-			// prevent the message from being copied again in superclass
-			return false;
+	private void doPublishEvent(ApplicationEvent event) {
+		if (this.applicationEventPublisher != null) {
+			this.applicationEventPublisher.publishEvent(event);
 		}
 	}
 
@@ -507,16 +706,17 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 
 		private final MessageHandler delegate;
 
-		private final boolean useNativeEncoding;
 
 		private SendingHandler(MessageHandler delegate, boolean embedHeaders,
 				String[] headersToEmbed, boolean useNativeEncoding) {
 			this.delegate = delegate;
-			this.setBeanFactory(AbstractMessageChannelBinder.this.getBeanFactory());
+			setBeanFactory(AbstractMessageChannelBinder.this.getBeanFactory());
 			this.embedHeaders = embedHeaders;
 			this.embeddedHeaders = headersToEmbed;
 			this.useNativeEncoding = useNativeEncoding;
 		}
+
+		private final boolean useNativeEncoding;
 
 		@Override
 		protected void handleMessageInternal(Message<?> message) throws Exception {
@@ -525,24 +725,26 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 			this.delegate.handleMessage(messageToSend);
 		}
 
+
+		@SuppressWarnings("deprecation")
 		private Message<?> serializeAndEmbedHeadersIfApplicable(Message<?> message) throws Exception {
 			MessageValues transformed = serializePayloadIfNecessary(message);
-			byte[] payload;
+			Object payload;
 			if (this.embedHeaders) {
 				Object contentType = transformed.get(MessageHeaders.CONTENT_TYPE);
 				// transform content type headers to String, so that they can be properly
 				// embedded in JSON
-				if (contentType instanceof MimeType) {
+				if (contentType != null) {
 					transformed.put(MessageHeaders.CONTENT_TYPE, contentType.toString());
 				}
 				Object originalContentType = transformed.get(BinderHeaders.BINDER_ORIGINAL_CONTENT_TYPE);
-				if (originalContentType instanceof MimeType) {
+				if (originalContentType != null) {
 					transformed.put(BinderHeaders.BINDER_ORIGINAL_CONTENT_TYPE, originalContentType.toString());
 				}
 				payload = EmbeddedHeaderUtils.embedHeaders(transformed, this.embeddedHeaders);
 			}
 			else {
-				payload = (byte[]) transformed.getPayload();
+				payload = transformed.getPayload();
 			}
 			return getMessageBuilderFactory().withPayload(payload).copyHeaders(transformed.getHeaders()).build();
 		}
@@ -596,4 +798,61 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 
 	}
 
+	private static final class EmbeddedHeadersChannelInterceptor extends ChannelInterceptorAdapter {
+
+		protected final Log logger;
+
+		EmbeddedHeadersChannelInterceptor(Log logger) {
+			this.logger = logger;
+		}
+
+		@Override
+		@SuppressWarnings("unchecked")
+		public Message<?> preSend(Message<?> message, MessageChannel channel) {
+			if (message.getPayload() instanceof byte[] &&
+					!message.getHeaders().containsKey(BinderHeaders.NATIVE_HEADERS_PRESENT)
+					&& EmbeddedHeaderUtils.mayHaveEmbeddedHeaders((byte[]) message.getPayload())) {
+
+				MessageValues messageValues;
+				try {
+					messageValues = EmbeddedHeaderUtils.extractHeaders((Message<byte[]>) message, true);
+				}
+				catch (Exception e) {
+					/*
+					 * debug() rather then error() since we don't know for sure that it
+					 * really is a message with embedded headers, it just meets the
+					 * criteria in EmbeddedHeaderUtils.mayHaveEmbeddedHeaders().
+					 */
+					if (logger.isDebugEnabled()) {
+						logger.debug(EmbeddedHeaderUtils.decodeExceptionMessage(message), e);
+					}
+					messageValues = new MessageValues(message);
+				}
+				return messageValues.toMessage();
+			}
+			return message;
+		}
+
+	}
+
+	protected static class PolledConsumerResources {
+
+		private final MessageSource<?> source;
+
+		private final ErrorInfrastructure errorInfrastructure;
+
+		public PolledConsumerResources(MessageSource<?> source, ErrorInfrastructure errorInfrastructure) {
+			this.source = source;
+			this.errorInfrastructure = errorInfrastructure;
+		}
+
+		MessageSource<?> getSource() {
+			return this.source;
+		}
+
+		ErrorInfrastructure getErrorInfrastructure() {
+			return this.errorInfrastructure;
+		}
+
+	}
 }

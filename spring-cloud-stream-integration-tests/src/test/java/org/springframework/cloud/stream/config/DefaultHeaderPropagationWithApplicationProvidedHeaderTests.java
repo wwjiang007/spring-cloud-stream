@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,10 +35,12 @@ import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.MessageHeaders;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.Assert.assertEquals;
+
 
 /**
  * @author Marius Bogoevici
+ * @author Oleg Zhurakousky
  */
 @RunWith(SpringJUnit4ClassRunner.class)
 @SpringBootTest(classes = DefaultHeaderPropagationWithApplicationProvidedHeaderTests.HeaderPropagationProcessor.class,
@@ -59,13 +61,10 @@ public class DefaultHeaderPropagationWithApplicationProvidedHeaderTests {
 				.setHeader("bar", "barValue")
 				.build());
 		@SuppressWarnings("unchecked")
-		Message<?> received = ((TestSupportBinder) binderFactory.getBinder(null, MessageChannel.class))
+		Message<String> received = (Message<String>) ((TestSupportBinder) binderFactory.getBinder(null, MessageChannel.class))
 				.messageCollector().forChannel(testProcessor.output()).poll(1, TimeUnit.SECONDS);
-		assertThat(received.getHeaders()).containsEntry("foo", "fooValue");
-		assertThat(received.getHeaders()).containsEntry("bar", "barValue");
-		assertThat(received.getHeaders()).containsEntry(MessageHeaders.CONTENT_TYPE, "custom/header");
-		assertThat(received).isNotNull();
-		assertThat(received.getPayload()).isEqualTo("{'name':'foo'}");
+		assertEquals("fooValue", received.getHeaders().get("foo"));
+		assertEquals("barValue", received.getHeaders().get("bar"));
 	}
 
 	@EnableBinding(Processor.class)
@@ -74,7 +73,7 @@ public class DefaultHeaderPropagationWithApplicationProvidedHeaderTests {
 
 		@ServiceActivator(inputChannel = "input", outputChannel = "output")
 		public Message<?> consume(String data) {
-			return MessageBuilder.withPayload(data).setHeader(MessageHeaders.CONTENT_TYPE, "custom/header").build();
+			return MessageBuilder.withPayload(data).setHeader(MessageHeaders.CONTENT_TYPE, "text/plain").build();
 		}
 
 	}

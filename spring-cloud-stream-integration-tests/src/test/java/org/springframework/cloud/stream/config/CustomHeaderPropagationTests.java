@@ -39,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Marius Bogoevici
+ * @author Oleg Zhurakousky
  */
 @RunWith(SpringJUnit4ClassRunner.class)
 @SpringBootTest(classes = CustomHeaderPropagationTests.HeaderPropagationProcessor.class,
@@ -53,6 +54,11 @@ public class CustomHeaderPropagationTests {
 	private BinderFactory binderFactory;
 
 	@Test
+	/**
+	 * @since 2.0 The behavior of content type handling has changed.
+	 * All input/output channels have a default content type of application/json
+	 * When a processor or a source returns a String, and if the content type is json it will be quoted
+	 */
 	public void testCustomHeaderPropagation() throws Exception {
 		testProcessor.input().send(MessageBuilder.withPayload("{'name':'foo'}")
 				.setHeader(MessageHeaders.CONTENT_TYPE, "application/json")
@@ -60,13 +66,13 @@ public class CustomHeaderPropagationTests {
 				.setHeader("bar", "barValue")
 				.build());
 		@SuppressWarnings("unchecked")
-		Message<?> received = ((TestSupportBinder) binderFactory.getBinder(null, MessageChannel.class))
+		Message<String> received = (Message<String>) ((TestSupportBinder) binderFactory.getBinder(null, MessageChannel.class))
 				.messageCollector().forChannel(testProcessor.output()).poll(10, TimeUnit.SECONDS);
 		assertThat(received).isNotNull();
 		assertThat(received.getHeaders()).containsEntry("foo", "fooValue");
 		assertThat(received.getHeaders()).doesNotContainKey("bar");
-		assertThat(received.getHeaders()).doesNotContainKey(MessageHeaders.CONTENT_TYPE);
-		assertThat(received.getPayload()).isEqualTo("{'name':'foo'}");
+		assertThat(received.getHeaders()).containsKeys(MessageHeaders.CONTENT_TYPE);
+		assertThat(new String(received.getPayload())).isEqualTo("{'name':'foo'}");
 	}
 
 	@EnableBinding(Processor.class)
@@ -74,8 +80,9 @@ public class CustomHeaderPropagationTests {
 	public static class HeaderPropagationProcessor {
 
 		@ServiceActivator(inputChannel = "input", outputChannel = "output")
-		public String consume(String data) {
-			return data;
+		public Message<String> consume(String data) {
+			//if we don't force content to be String, it will be quoted on the outbound channel
+			return MessageBuilder.withPayload(data).setHeader(MessageHeaders.CONTENT_TYPE,"text/plain").build();
 		}
 
 	}

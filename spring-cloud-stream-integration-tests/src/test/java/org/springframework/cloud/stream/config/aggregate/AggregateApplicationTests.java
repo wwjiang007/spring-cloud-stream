@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ package org.springframework.cloud.stream.config.aggregate;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.Assert;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -37,15 +38,21 @@ import static org.hamcrest.Matchers.notNullValue;
 
 /**
  * @author Ilayaperumal Gopinathan
+ * @author Oleg Zhurakousky
  */
 @RunWith(SpringJUnit4ClassRunner.class)
 public class AggregateApplicationTests {
+
+	@Before
+	public void before() {
+		System.setProperty("server.port", "0");
+	}
 
 	@Test
 	@SuppressWarnings("unchecked")
 	public void testAggregateApplication() throws Exception {
 		ConfigurableApplicationContext context = new AggregateApplicationBuilder(
-				TestSupportBinderAutoConfiguration.class).from(TestSource.class).to(TestProcessor.class).run();
+				TestSupportBinderAutoConfiguration.class).web(false).from(TestSource.class).to(TestProcessor.class).run();
 		TestSupportBinder testSupportBinder = (TestSupportBinder) context.getBean(BinderFactory.class).getBinder(null,
 				MessageChannel.class);
 		MessageChannel processorOutput = testSupportBinder.getChannelForName("output");

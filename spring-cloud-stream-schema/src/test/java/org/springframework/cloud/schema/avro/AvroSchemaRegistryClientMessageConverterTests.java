@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,6 +29,7 @@ import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.cache.support.NoOpCacheManager;
 import org.springframework.cloud.stream.annotation.EnableBinding;
 import org.springframework.cloud.stream.annotation.StreamListener;
+import org.springframework.cloud.stream.annotation.StreamMessageConverter;
 import org.springframework.cloud.stream.messaging.Sink;
 import org.springframework.cloud.stream.messaging.Source;
 import org.springframework.cloud.stream.schema.avro.AvroSchemaRegistryClientMessageConverter;
@@ -158,10 +159,10 @@ public class AvroSchemaRegistryClientMessageConverterTests {
 
 	@Configuration
 	public static class NoCacheConfiguration {
-		@SuppressWarnings("deprecation")
 		@Bean
+		@StreamMessageConverter
 		AvroSchemaRegistryClientMessageConverter avroSchemaRegistryClientMessageConverter() {
-			return new AvroSchemaRegistryClientMessageConverter(new DefaultSchemaRegistryClient());
+			return new AvroSchemaRegistryClientMessageConverter(new DefaultSchemaRegistryClient(), new NoOpCacheManager());
 		}
 	}
 }
